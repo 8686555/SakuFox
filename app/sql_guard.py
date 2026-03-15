@@ -15,9 +15,6 @@ def enforce_select_only(sql: str) -> None:
         raise ValueError("仅允许 SELECT 查询")
     if FORBIDDEN.search(sql):
         raise ValueError("SQL 包含危险操作")
-    stmt = sql.strip().rstrip(";")
-    if ";" in stmt:
-        raise ValueError("不允许多语句 SQL")
 
 
 def enforce_table_whitelist(sql: str, allowed_tables: list[str]) -> list[str]:

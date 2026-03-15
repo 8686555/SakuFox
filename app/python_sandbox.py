@@ -123,6 +123,7 @@ def run_python_pipeline(
     upload_rows: dict[str, list[dict]],
     upload_paths: dict[str, str],
     sql_tool: Callable[[str], list[dict]],
+    step_results: list[dict] | None = None,
 ) -> dict:
     seed_df = pd.DataFrame(seed_rows) if seed_rows else pd.DataFrame()
     uploads_df = {name: pd.DataFrame(rows) for name, rows in upload_rows.items()}
@@ -137,6 +138,8 @@ def run_python_pipeline(
         "final_df": seed_df,
         "uploaded_dataframes": uploads_df,
         "uploaded_file_paths": upload_paths,
+        # multi-step results from prior steps
+        "step_results": step_results or [],
         # output slots
         "chart_specs": [],
         "insight_hints": [],
@@ -213,6 +216,11 @@ def run_python_pipeline(
     chart_specs = local_vars.get("chart_specs", [])
     if not isinstance(chart_specs, list):
         chart_specs = []
+    
+    # Auto-inject engine tag for frontend renderer
+    for spec in chart_specs:
+        if isinstance(spec, dict) and "engine" not in spec:
+            spec["engine"] = "echarts"
 
     insight_hints = local_vars.get("insight_hints", [])
     if not isinstance(insight_hints, list):

@@ -153,6 +153,17 @@ def iterate(req: IterateRequest, user: User = Depends(get_current_user)):
                 # Emit data rows
                 if exec_result["rows"]:
                     yield json.dumps({"type": "data", "rows": exec_result["rows"][:200]}, ensure_ascii=False) + "\n"
+                # Emit per-step results
+                for idx, sr in enumerate(exec_result.get("step_results", [])):
+                    yield json.dumps({
+                        "type": "step_result",
+                        "step_index": idx,
+                        "data": {
+                            "rows_count": len(sr.get("rows", [])),
+                            "tables": sr.get("tables", []),
+                            "error": sr.get("error", None),
+                        },
+                    }, ensure_ascii=False) + "\n"
                 # Emit chart specs
                 for spec in exec_result.get("chart_specs", []):
                     yield json.dumps({"type": "chart_spec", "data": spec}, ensure_ascii=False) + "\n"
@@ -160,8 +171,7 @@ def iterate(req: IterateRequest, user: User = Depends(get_current_user)):
                 # Save iteration
                 iteration_id = store.append_iteration(user.user_id, session_id, {
                     "message": message,
-                    "sql": result_data.get("sql", ""),
-                    "python_code": result_data.get("python_code", ""),
+                    "steps": result_data.get("steps", []),
                     "conclusions": result_data.get("conclusions", []),
                     "hypotheses": result_data.get("hypotheses", []),
                     "action_items": result_data.get("action_items", []),
@@ -176,8 +186,7 @@ def iterate(req: IterateRequest, user: User = Depends(get_current_user)):
                     "session_id": session_id,
                     "sandbox_id": req.sandbox_id,
                     "message": message,
-                    "sql": result_data.get("sql", ""),
-                    "python_code": result_data.get("python_code", ""),
+                    "steps": result_data.get("steps", []),
                     "explanation": result_data.get("explanation", ""),
                     "tables": selected_tables,
                     "status": "executed",
@@ -472,47 +481,77 @@ def _query_rows(sql: str, sandbox_id: str | None = None) -> list[dict]:
 
 
 def _auto_execute(result_data: dict, allowed_tables: list[str], upload_rows: dict[str, list[dict]], upload_paths: dict[str, str], sandbox_id: str | None = None) -> dict:
-    """Execute SQL + Python from an iteration result automatically."""
-    sql = result_data.get("sql", "").strip()
-    python_code = result_data.get("python_code", "").strip()
+    """Execute a multi-step pipeline from an iteration result.
 
-    seed_rows: list[dict] = []
-    used_tables: list[str] = []
+    The result_data contains a `steps` array. Each step is either:
+      {"tool": "sql", "code": "SELECT ..."}
+      {"tool": "python", "code": "..."}
 
-    # Execute SQL if present — route to external DB or built-in SQLite
-    if sql:
-        try:
-            seed_rows, used_tables = execute_select_sql_with_mask(
-                sql=sql,
-                allowed_tables=allowed_tables,
-                query_executor=lambda s: _query_rows(s, sandbox_id),
-            )
-        except Exception as exc:
-            return {"rows": [{"error": f"SQL 执行失败: {str(exc)}"}], "tables": [], "chart_specs": []}
+    Steps are executed sequentially. Results from prior steps are passed
+    to subsequent Python steps via the `step_results` list.
+    """
+    steps = result_data.get("steps", [])
+    if not isinstance(steps, list):
+        steps = []
 
-    # Execute Python if present
-    if python_code:
-        def sql_tool(s: str) -> list[dict]:
-            rows, _ = execute_select_sql_with_mask(
-                sql=s,
-                allowed_tables=allowed_tables,
-                query_executor=lambda x: _query_rows(x, sandbox_id),
-            )
-            return rows
+    step_results: list[dict] = []
+    all_rows: list[dict] = []
+    all_tables: list[str] = []
+    all_chart_specs: list[dict] = []
+    last_sql_rows: list[dict] = []  # for df backward compat
 
-        try:
-            python_result = run_python_pipeline(
-                python_code=python_code,
-                seed_rows=seed_rows,
-                upload_rows=upload_rows,
-                upload_paths=upload_paths,
-                sql_tool=sql_tool,
-            )
-            return {"rows": python_result["rows"], "tables": used_tables, "chart_specs": python_result.get("chart_specs", [])}
-        except Exception as exc:
-            return {"rows": [{"error": f"Python 执行失败: {str(exc)}"}], "tables": used_tables, "chart_specs": []}
+    for i, step in enumerate(steps):
+        tool = step.get("tool", "").lower()
+        code = step.get("code", "").strip()
+        if not code:
+            step_results.append({"rows": [], "tables": [], "error": "空代码"})
+            continue
 
-    return {"rows": seed_rows, "tables": used_tables, "chart_specs": []}
+        if tool == "sql":
+            try:
+                rows, used_tables = execute_select_sql_with_mask(
+                    sql=code,
+                    allowed_tables=allowed_tables,
+                    query_executor=lambda s: _query_rows(s, sandbox_id),
+                )
+                step_results.append({"rows": rows, "tables": used_tables})
+                all_rows = rows  # last SQL result becomes the primary rows
+                last_sql_rows = rows
+                all_tables.extend(t for t in used_tables if t not in all_tables)
+            except Exception as exc:
+                step_results.append({"rows": [{"error": f"SQL 执行失败 (step {i+1}): {str(exc)}"}], "tables": []})
+                all_rows = step_results[-1]["rows"]
+
+        elif tool == "python":
+            def sql_tool(s: str) -> list[dict]:
+                rows, _ = execute_select_sql_with_mask(
+                    sql=s,
+                    allowed_tables=allowed_tables,
+                    query_executor=lambda x: _query_rows(x, sandbox_id),
+                )
+                return rows
+
+            try:
+                python_result = run_python_pipeline(
+                    python_code=code,
+                    seed_rows=last_sql_rows,
+                    upload_rows=upload_rows,
+                    upload_paths=upload_paths,
+                    sql_tool=sql_tool,
+                    step_results=step_results,
+                )
+                result_rows = python_result["rows"]
+                result_charts = python_result.get("chart_specs", [])
+                step_results.append({"rows": result_rows, "tables": all_tables, "chart_specs": result_charts})
+                all_rows = result_rows
+                all_chart_specs.extend(result_charts)
+            except Exception as exc:
+                step_results.append({"rows": [{"error": f"Python 执行失败 (step {i+1}): {str(exc)}"}], "tables": all_tables})
+                all_rows = step_results[-1]["rows"]
+        else:
+            step_results.append({"rows": [], "tables": [], "error": f"未知工具: {tool}"})
+
+    return {"rows": all_rows, "tables": all_tables, "chart_specs": all_chart_specs, "step_results": step_results}
 
 
 def _resolve_selected_tables(requested_tables: list[str] | None, sandbox: dict, user: User, max_selected_tables: int) -> list[str]:

@@ -157,18 +157,34 @@ def _run_iteration_by_llm(
     # Parse the final JSON
     parsed = _parse_bundle_json(full_content)
 
-    # Normalize fields
-    sql = str(parsed.get("sql", "")).strip()
-    python_code = str(parsed.get("python_code", "")).strip()
-    tools_used = parsed.get("tools_used", [])
-    if not isinstance(tools_used, list):
-        tools_used = [str(tools_used)]
-    # Infer tools_used if not provided
-    if not tools_used:
+    # ── Extract steps (new multi-step format) ─────────────────────────
+    steps = parsed.get("steps", [])
+    if not isinstance(steps, list):
+        steps = []
+
+    # Backward compatibility: if no steps, build from flat sql/python_code
+    if not steps:
+        sql = str(parsed.get("sql", "")).strip()
+        python_code = str(parsed.get("python_code", "")).strip()
         if sql:
-            tools_used.append("execute_select_sql")
+            steps.append({"tool": "sql", "code": sql})
         if python_code:
-            tools_used.append("python_interpreter")
+            steps.append({"tool": "python", "code": python_code})
+
+    # Normalize each step
+    normalized_steps = []
+    for s in steps:
+        if isinstance(s, dict) and s.get("tool") and s.get("code"):
+            tool = str(s["tool"]).strip().lower()
+            if tool in ("sql", "python"):
+                normalized_steps.append({"tool": tool, "code": str(s["code"]).strip()})
+
+    # Infer tools_used from steps
+    tools_used = []
+    for s in normalized_steps:
+        tool_name = "execute_select_sql" if s["tool"] == "sql" else "python_interpreter"
+        if tool_name not in tools_used:
+            tools_used.append(tool_name)
 
     conclusions = parsed.get("conclusions", [])
     if not isinstance(conclusions, list):
@@ -207,8 +223,7 @@ def _run_iteration_by_llm(
     yield {
         "type": "result",
         "data": {
-            "sql": sql,
-            "python_code": python_code,
+            "steps": normalized_steps,
             "tools_used": tools_used,
             "conclusions": normalized_conclusions,
             "hypotheses": normalized_hypotheses,
@@ -230,8 +245,7 @@ def _run_iteration_by_rules(message: str, sandbox: dict) -> Generator[dict, None
     yield {
         "type": "result",
         "data": {
-            "sql": sql,
-            "python_code": "",
+            "steps": [{"tool": "sql", "code": sql}],
             "tools_used": ["execute_select_sql"],
             "conclusions": [
                 {"text": f"通用数据探查：从 {table} 取样 200 行。建议配置 LLM 以获得自主分析能力。", "confidence": 1.0},

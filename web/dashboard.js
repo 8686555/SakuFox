@@ -272,15 +272,33 @@ function renderIterationResult(result, wrapper, accumulatedThought, chartContain
   const actionItems = (result.actionItems || result.action_items || []).map(a => `<li style="margin-bottom:4px"><i class="fa-solid fa-check" style="color:#10b981"></i> ${escapeHtml(a)}</li>`).join("");
 
   let codeBlocks = "";
-  if (result.sql) {
-    codeBlocks += `<div style="margin-top:12px;font-weight:600;font-size:12px">执行 SQL:</div><pre>${escapeHtml(result.sql)}</pre>`;
-  }
-  if (result.python_code) {
-    codeBlocks += `<div style="margin-top:12px;font-weight:600;font-size:12px">执行 Python:</div>
-      <details class="code-details">
-        <summary>查看分析代码 (Python)</summary>
-        <pre><code class="language-python">${escapeHtml(result.python_code)}</code></pre>
-      </details>`;
+  // Multi-step rendering
+  const steps = result.steps || [];
+  if (steps.length > 0) {
+    steps.forEach((step, idx) => {
+      const label = step.tool === "sql" ? "SQL" : "Python";
+      const icon = step.tool === "sql" ? "fa-database" : "fa-code";
+      const langClass = step.tool === "sql" ? "language-sql" : "language-python";
+      codeBlocks += `
+        <details class="code-details" style="margin-top:10px;">
+          <summary style="font-size:12px;font-weight:600;">
+            <i class="fa-solid ${icon}" style="margin-right:4px;"></i>Step ${idx + 1}: ${label}
+          </summary>
+          <pre><code class="${langClass}">${escapeHtml(step.code)}</code></pre>
+        </details>`;
+    });
+  } else {
+    // Backward compatibility for old flat format
+    if (result.sql) {
+      codeBlocks += `<div style="margin-top:12px;font-weight:600;font-size:12px">执行 SQL:</div><pre>${escapeHtml(result.sql)}</pre>`;
+    }
+    if (result.python_code) {
+      codeBlocks += `<div style="margin-top:12px;font-weight:600;font-size:12px">执行 Python:</div>
+        <details class="code-details">
+          <summary>查看分析代码 (Python)</summary>
+          <pre><code class="language-python">${escapeHtml(result.python_code)}</code></pre>
+        </details>`;
+    }
   }
 
   const actionsSection = actionItems ? `
@@ -443,7 +461,7 @@ async function handleSend(hypothesisId = null) {
             chartContainers += `<div id="${id}" style="height:320px;width:100%;margin:16px 0;"></div>`;
             setTimeout(() => {
               const dom = document.getElementById(id);
-              if (dom && data.data && data.data.engine === "echarts") {
+              if (dom && data.data) {
                 const chart = echarts.init(dom);
                 chart.setOption(data.data);
               }

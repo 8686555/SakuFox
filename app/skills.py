@@ -13,12 +13,20 @@ def save_skill_from_proposal(user: User, proposal_id: str, name: str) -> dict:
     if proposal["status"] != "executed":
         raise ValueError("仅可保存已执行提案")
     inherited_tables = filter_tables_by_user(user, proposal["tables"])
+    steps = proposal.get("steps", [])
+    sql_template = ""
+    for s in steps:
+        if s.get("tool") == "sql":
+            sql_template = s.get("code", "")
+            break
+
     payload = {
         "name": name,
         "owner_id": user.user_id,
         "owner_name": user.display_name,
         "groups": user.groups,
-        "sql_template": proposal["sql"],
+        "sql_template": sql_template,
+        "steps": steps,
         "session_patches": proposal["session_patches"],
         "inherited_tables": inherited_tables,
         "created_at": datetime.now(timezone.utc).isoformat(),
