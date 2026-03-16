@@ -8,4 +8,5 @@ app/config.py
 node_modules/
 dist/
 build/
-uploads/
+uploads
+sakufox.db

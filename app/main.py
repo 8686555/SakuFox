@@ -96,11 +96,16 @@ def iterate(req: IterateRequest, user: User = Depends(get_current_user)):
     session_id, session = store.get_or_create_session(user.user_id, req.session_id)
 
     # Auto-title the session from the first message and track sandbox_id
+    updates = {}
     if not session.get("title"):
-        title = req.message[:40].strip()
-        store.update_session_title(user.user_id, session_id, title)
+        updates["title"] = req.message[:40].strip()
     if not session.get("sandbox_id"):
-        session["sandbox_id"] = req.sandbox_id
+        updates["sandbox_id"] = req.sandbox_id
+    
+    if updates:
+        store.update_session(user.user_id, session_id, updates)
+        # Update the local dict for the rest of the function logic
+        session.update(updates)
 
     selected_tables = _resolve_selected_tables(
         requested_tables=req.selected_tables,
