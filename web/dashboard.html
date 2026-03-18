@@ -103,14 +103,13 @@
           <button class="toggle-btn" id="toggleRightBtn" title="折叠"><i class="fa-solid fa-angles-right"></i></button>
         </div>
         <div class="sidebar-content">
-          <div class="sidebar-section">
+          <div class="sidebar-section" style="margin-bottom: 20px;">
             <div class="section-header">
               <i class="fa-solid fa-floppy-disk"></i>
               <h2>沉淀技能</h2>
             </div>
             <div class="save-skill-box" style="display:flex;flex-direction:column;gap:7px;">
               <button id="proposeSkillBtn" class="btn btn-primary btn-block" style="margin-bottom:5px;"><i class="fa-solid fa-wand-magic-sparkles"></i> 将对话提炼为技能</button>
-            </div>
             </div>
           </div>
 
@@ -119,9 +118,11 @@
               <i class="fa-solid fa-layer-group"></i>
               <h2>已沉淀技能</h2>
             </div>
-            <ul id="skillList" class="nav-list">
+            <ul id="skillList" class="nav-list" style="margin-bottom: 20px;">
               <li class="empty-state">暂无沉淀技能</li>
             </ul>
+          </div>
+          
           <div class="sidebar-section" style="border-top: 1px solid var(--border); padding-top: 10px;">
             <button id="btnNewSession" class="btn btn-outline btn-block" style="margin-bottom: 12px; border-style: dashed; border-color: var(--primary);">
               <i class="fa-solid fa-plus"></i> 开启新对话

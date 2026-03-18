@@ -206,7 +206,7 @@ body {
 }
 
 .sidebar.collapsed .sidebar-content {
-  display: none;
+  display: none !important;
 }
 
 .sidebar.collapsed .sidebar-header-actions {

@@ -1132,34 +1132,43 @@ function setupSidebar(sidebarId, resizerId, toggleBtnId, direction) {
   let startX = 0;
   let startWidth = 0;
 
-  resizer.onmousedown = (e) => {
+  resizer.addEventListener("mousedown", (e) => {
     isResizing = true;
     startX = e.clientX;
     startWidth = parseInt(window.getComputedStyle(sidebar).width, 10);
     resizer.classList.add("resizing");
     document.body.style.cursor = "col-resize";
+    document.body.classList.add("no-select"); // Optional: add a class to disable selection during resize
     e.preventDefault();
-  };
+  });
 
-  document.onmousemove = (e) => {
+  window.addEventListener("mousemove", (e) => {
     if (!isResizing) return;
-    if (sidebar.classList.contains("collapsed")) {
+    
+    let delta = e.clientX - startX;
+    let newWidth = direction === "left" ? startWidth + delta : startWidth - delta;
+    
+    // Auto-collapse logic
+    if (newWidth < 100) {
+      sidebar.classList.add("collapsed");
+      newWidth = 50; 
+    } else {
       sidebar.classList.remove("collapsed");
-      startWidth = 50;
+      if (newWidth < 150) newWidth = 150;
+      if (newWidth > 600) newWidth = 600;
     }
-    let newWidth = direction === "left" ? startWidth + (e.clientX - startX) : startWidth - (e.clientX - startX);
-    if (newWidth < 150) newWidth = 150;
-    if (newWidth > 600) newWidth = 600;
+    
     sidebar.style.width = `${newWidth}px`;
-  };
+  });
 
-  document.onmouseup = () => {
+  window.addEventListener("mouseup", () => {
     if (isResizing) {
       isResizing = false;
       resizer.classList.remove("resizing");
       document.body.style.cursor = "default";
+      document.body.classList.remove("no-select");
     }
-  };
+  });
 }
 setupSidebar("leftSidebar", "resizerLeft", "toggleLeftBtn", "left");
 setupSidebar("rightSidebar", "resizerRight", "toggleRightBtn", "right");
