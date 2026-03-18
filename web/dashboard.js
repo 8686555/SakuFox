@@ -792,6 +792,8 @@ document.getElementById("uploadBtn").onclick = async () => {
     }
 
     if (sessionId) form.append("session_id", sessionId);
+    const sandboxId = sandboxSelect.value;
+    if (sandboxId) form.append("sandbox_id", sandboxId);
 
     const token = localStorage.getItem("token");
     const headers = {};
