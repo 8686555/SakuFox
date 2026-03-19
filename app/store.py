@@ -351,6 +351,16 @@ class DatabaseStore:
                 }
             return None
 
+    def get_last_proposal_id(self, user_id: str, session_id: str) -> str | None:
+        with self.SessionFactory() as sess:
+            p = sess.execute(
+                select(DBProposal)
+                .where(DBProposal.session_id == session_id, DBProposal.user_id == user_id)
+                .order_by(DBProposal.created_at.desc())
+                .limit(1)
+            ).scalar_one_or_none()
+            return p.proposal_id if p else None
+
     def list_sessions(self, user_id: str) -> list[dict]:
         with self.SessionFactory() as sess:
             db_sessions = sess.execute(

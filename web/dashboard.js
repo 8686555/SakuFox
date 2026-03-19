@@ -346,6 +346,8 @@ async function switchSession(targetSessionId) {
   try {
     const res = await api(`/api/chat/history?session_id=${targetSessionId}`);
     cards.innerHTML = "";
+    lastProposalId = res.last_proposal_id || ""; // Sync for skill extraction from history
+
     if (!res.iterations || res.iterations.length === 0) {
       cards.innerHTML = '<div class="welcome-card"><h3>空对话</h3><p>该对话内无记录。</p></div>';
       return;
@@ -478,7 +480,7 @@ function escapeHtml(text) {
     .replace(/'/g, "&#039;");
 }
 
-function renderIterationResult(result, wrapper, accumulatedThought, chartContainers, dataRowsHtml) {
+function renderIterationResult(result, wrapper, accumulatedThought, chartContainers, dataRowsHtml, pendingCharts = []) {
   const conclusions = (result.conclusions || []).map(c => {
     let confBadge = "";
     if (c.confidence >= 0.8) confBadge = `<span style="color:#10b981;font-size:11px;margin-left:8px;">(置信度高 ${(c.confidence * 100).toFixed(0)}%)</span>`;
@@ -563,6 +565,19 @@ function renderIterationResult(result, wrapper, accumulatedThought, chartContain
       handleSend(btn.getAttribute("data-id"));
     };
   });
+
+  // Initialize deferred charts now that HTML is in the DOM
+  if (pendingCharts && pendingCharts.length > 0) {
+    setTimeout(() => {
+        pendingCharts.forEach(pc => {
+            const dom = document.getElementById(pc.id);
+            if (dom && pc.spec) {
+                const chart = echarts.init(dom);
+                chart.setOption(pc.spec);
+            }
+        });
+    }, 50);
+  }
 }
 
 async function handleSend(hypothesisId = null) {
@@ -650,6 +665,7 @@ async function handleSend(hypothesisId = null) {
     let dataRowsHtml = "";
     let finalResultData = null;
     let autoCompleted = false;
+    let pendingCharts = []; // Collect specs for initialization AFTER DOM update
 
     while (true) {
       const { done, value } = await reader.read();
@@ -683,18 +699,12 @@ async function handleSend(hypothesisId = null) {
           } else if (data.type === "chart_spec") {
             const id = `chart_${Date.now()}_${chartIndex++}`;
             chartContainers += `<div id="${id}" style="height:320px;width:100%;margin:16px 0;"></div>`;
-            setTimeout(() => {
-              const dom = document.getElementById(id);
-              if (dom && data.data) {
-                const chart = echarts.init(dom);
-                chart.setOption(data.data);
-              }
-            }, 0);
+            pendingCharts.push({ id, spec: data.data });
           } else if (data.type === "iteration_complete") {
             sessionId = data.data.session_id;
             lastProposalId = data.data.proposal_id; // For skill saving
             if (finalResultData) {
-              renderIterationResult(finalResultData, wrapper, accumulatedThought, chartContainers, dataRowsHtml);
+              renderIterationResult(finalResultData, wrapper, accumulatedThought, chartContainers, dataRowsHtml, pendingCharts);
             }
             autoCompleted = true;
             // Auto-refresh session list so current session appears immediately
@@ -710,7 +720,7 @@ async function handleSend(hypothesisId = null) {
 
     // In case execution stream was incomplete but we had result data
     if (!autoCompleted && finalResultData) {
-      renderIterationResult(finalResultData, wrapper, accumulatedThought, chartContainers, dataRowsHtml);
+      renderIterationResult(finalResultData, wrapper, accumulatedThought, chartContainers, dataRowsHtml, pendingCharts);
     }
 
   } catch (e) {

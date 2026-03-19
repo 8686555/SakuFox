@@ -6,6 +6,7 @@ SakuFox is an interactive data analysis platform based on Agentic autonomous age
 
 ![intro](images/preview.png)
 ![intro](images/usage.png)
+![intro](images/SakuFox video.mp4)
 
 ---
 
@@ -93,7 +94,12 @@ Contributions are welcome! Please submit a Pull Request or open an issue for fea
 
 ---
 
+## 🌟 Acknowledgement
+
+A special thanks to the [Apache Superset](https://superset.apache.org/) project. This project draws inspiration from its frontend design and utilizes its demo datasets. Superset is an outstanding open-source data visualization and exploration platform that serves as a benchmark for modern data tools.
+
+---
+
 ## 📄 License
 
 This project is licensed under the Apache License 2.0 - see the [LICENSE](LICENSE) file for details.
-

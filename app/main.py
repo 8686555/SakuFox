@@ -165,6 +165,10 @@ def iterate(req: IterateRequest, user: User = Depends(get_current_user)):
                     upload_paths=allowed_upload_paths,
                     sandbox_id=req.sandbox_id,
                 )
+                # Sanitize for JSON compatibility (handles NaN/Inf)
+                from app.utils import sanitize_for_json
+                exec_result = sanitize_for_json(exec_result)
+
                 # Emit data rows
                 if exec_result["rows"]:
                     yield json.dumps({"type": "data", "rows": exec_result["rows"][:200]}, ensure_ascii=False) + "\n"
@@ -254,7 +258,8 @@ def feedback(req: FeedbackRequest, user: User = Depends(get_current_user)):
 def iteration_history(session_id: str, user: User = Depends(get_current_user)):
     """Get iteration history for a session."""
     history = store.get_iteration_history(user.user_id, session_id)
-    return {"session_id": session_id, "iterations": history}
+    last_proposal_id = store.get_last_proposal_id(user.user_id, session_id)
+    return {"session_id": session_id, "iterations": history, "last_proposal_id": last_proposal_id}
 
 
 @app.get("/api/chat/sessions")
