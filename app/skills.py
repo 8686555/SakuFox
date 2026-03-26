@@ -102,5 +102,5 @@ def list_skills(user: User) -> list[dict]:
     for skill_id, item in store.skills.items():
         if item["owner_id"] == user.user_id or set(item["groups"]).intersection(user.groups):
             output.append({"skill_id": skill_id, **item})
-    output.sort(key=lambda x: x["created_at"], reverse=True)
+    output.sort(key=lambda x: x.get("created_at") or "", reverse=True)
     return output
