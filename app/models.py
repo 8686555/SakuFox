@@ -21,6 +21,7 @@ class IterateRequest(BaseModel):
 
 class AutoAnalyzeRequest(IterateRequest):
     """Run one-click autonomous multi-round analysis until the model stops using tools."""
+    message: str = ""
     max_rounds: int = Field(default=100, ge=1, le=100)
     trace_mode: str = Field(default="full", pattern="^full$")
 

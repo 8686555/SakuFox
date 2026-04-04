@@ -166,10 +166,18 @@ class DatabaseStore:
             "ALTER TABLE iterations ADD COLUMN mode VARCHAR(50) DEFAULT 'manual'",
             "ALTER TABLE iterations ADD COLUMN loop_rounds JSON",
             "ALTER TABLE iterations ADD COLUMN final_report_md TEXT",
+            "ALTER TABLE iterations ADD COLUMN report_title VARCHAR(255)",
+            "ALTER TABLE iterations ADD COLUMN final_report_html TEXT",
+            "ALTER TABLE iterations ADD COLUMN final_report_summary TEXT",
+            "ALTER TABLE iterations ADD COLUMN final_report_chart_bindings JSON",
             "ALTER TABLE iterations ADD COLUMN report_meta JSON",
             "ALTER TABLE proposals ADD COLUMN mode VARCHAR(50) DEFAULT 'manual'",
             "ALTER TABLE proposals ADD COLUMN loop_rounds JSON",
             "ALTER TABLE proposals ADD COLUMN final_report_md TEXT",
+            "ALTER TABLE proposals ADD COLUMN report_title VARCHAR(255)",
+            "ALTER TABLE proposals ADD COLUMN final_report_html TEXT",
+            "ALTER TABLE proposals ADD COLUMN final_report_summary TEXT",
+            "ALTER TABLE proposals ADD COLUMN final_report_chart_bindings JSON",
             "ALTER TABLE proposals ADD COLUMN report_meta JSON",
         ):
             try:
@@ -484,6 +492,8 @@ class DatabaseStore:
 
             "iteration_id": it.iteration_id,
 
+            "session_id": it.session_id,
+
             "message": it.message,
 
             "mode": it.mode or "manual",
@@ -505,6 +515,14 @@ class DatabaseStore:
             "loop_rounds": it.loop_rounds or [],
 
             "final_report_md": it.final_report_md or "",
+
+            "report_title": it.report_title or "",
+
+            "final_report_html": it.final_report_html or "",
+
+            "final_report_summary": it.final_report_summary or "",
+
+            "final_report_chart_bindings": it.final_report_chart_bindings or [],
 
             "report_meta": it.report_meta or {},
 
@@ -601,6 +619,14 @@ class DatabaseStore:
                 loop_rounds=iteration.get("loop_rounds", []),
 
                 final_report_md=iteration.get("final_report_md", ""),
+
+                report_title=iteration.get("report_title", ""),
+
+                final_report_html=iteration.get("final_report_html", ""),
+
+                final_report_summary=iteration.get("final_report_summary", ""),
+
+                final_report_chart_bindings=iteration.get("final_report_chart_bindings", []),
 
                 report_meta=iteration.get("report_meta", {}),
 
@@ -728,6 +754,14 @@ class DatabaseStore:
 
                 final_report_md=data.get("final_report_md"),
 
+                report_title=data.get("report_title"),
+
+                final_report_html=data.get("final_report_html"),
+
+                final_report_summary=data.get("final_report_summary"),
+
+                final_report_chart_bindings=data.get("final_report_chart_bindings"),
+
                 report_meta=data.get("report_meta"),
 
                 created_at=datetime.now(timezone.utc).isoformat()
@@ -800,6 +834,14 @@ class DatabaseStore:
 
                     "final_report_md": p.final_report_md or "",
 
+                    "report_title": p.report_title or "",
+
+                    "final_report_html": p.final_report_html or "",
+
+                    "final_report_summary": p.final_report_summary or "",
+
+                    "final_report_chart_bindings": p.final_report_chart_bindings or [],
+
                     "report_meta": p.report_meta or {},
 
                     "session_patches": p.session_patches or [],
@@ -831,6 +873,19 @@ class DatabaseStore:
             ).scalar_one_or_none()
 
             return p.proposal_id if p else None
+
+
+    def get_iteration(self, user_id: str, iteration_id: str) -> dict | None:
+
+        with self.SessionFactory() as sess:
+
+            it = sess.execute(
+
+                select(DBIteration).where(DBIteration.iteration_id == iteration_id, DBIteration.user_id == user_id)
+
+            ).scalar_one_or_none()
+
+            return self._iter_to_dict(it) if it else None
 
 
 

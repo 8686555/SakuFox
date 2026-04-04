@@ -1,3 +1,4 @@
+import html
 import json
 
 import re
@@ -273,6 +274,26 @@ def _build_iteration_user_prompt(
                 hypo_label = t("label_proposed_hypotheses", default="提出猜想")
 
                 parts.append(f"  {hypo_label}: {', '.join(h.get('text', str(h)) if isinstance(h, dict) else str(h) for h in hypotheses[:3])}...")
+
+            report_title = str(it.get("report_title", "") or "").strip()
+            report_summary = str(it.get("final_report_summary", "") or "").strip()
+            report_meta = it.get("report_meta", {}) or {}
+            if report_title or report_summary:
+                report_label = "Auto-analysis report" if is_en else "自动分析报告"
+                parts.append(f"  {report_label}: {report_title or 'Untitled report'}")
+                if report_summary:
+                    summary_label = "Report summary" if is_en else "报告摘要"
+                    parts.append(f"  {summary_label}: {report_summary[:800]}")
+                meta_bits: list[str] = []
+                stop_reason = str(report_meta.get("stop_reason", "") or "").strip()
+                rounds_completed = report_meta.get("rounds_completed")
+                if stop_reason:
+                    meta_bits.append(f"stop_reason={stop_reason}")
+                if rounds_completed not in (None, ""):
+                    meta_bits.append(f"rounds={rounds_completed}")
+                if meta_bits:
+                    meta_label = "Report meta" if is_en else "报告元信息"
+                    parts.append(f"  {meta_label}: {', '.join(meta_bits)}")
 
         parts.append("")
 
@@ -792,6 +813,11 @@ def generate_auto_analysis_report(
 ) -> str:
     """Build a final business report from completed auto-analysis rounds."""
     config = load_config()
+    is_en = get_lang() == "en"
+    """
+    report_language = "English" if is_en else "简体中文"
+    """
+    report_language = "English" if is_en else "Simplified Chinese"
     selected_provider = (provider or config.llm_provider).lower()
     if selected_provider not in {"openai", "anthropic"}:
         return _build_fallback_auto_report(message, loop_rounds, stop_reason)
@@ -807,13 +833,42 @@ def generate_auto_analysis_report(
         f"Stop reason:\n{stop_reason}\n\n"
         f"Business knowledge:\n{knowledge_block}\n\n"
         f"Auto-analysis rounds:\n{rounds_summary}\n\n"
+        f"Write all content in {report_language}.\n\n"
         "Write the final report in Markdown with exactly these sections:\n"
+        + (
+            "## Executive Summary\n"
+            "## Key Findings\n"
+            "## Evidence And Analysis Process\n"
+            "## Charts And Data Notes\n"
+            "## Business Recommendations\n"
+            "## Remaining Validation Questions\n"
+            if is_en
+            else "## 执行摘要\n"
+            "## 关键发现\n"
+            "## 证据与分析过程\n"
+            "## 图表与数据说明\n"
+            "## 业务建议\n"
+            "## 待验证问题\n"
+        )
+        + "Avoid code unless a very short snippet is necessary."
+    )
+    section_template = (
         "## Executive Summary\n"
         "## Key Findings\n"
         "## Evidence And Analysis Process\n"
         "## Charts And Data Notes\n"
         "## Business Recommendations\n"
         "## Remaining Validation Questions\n"
+    )
+    user_prompt = (
+        f"Original request:\n{message}\n\n"
+        f"Stop reason:\n{stop_reason}\n\n"
+        f"Business knowledge:\n{knowledge_block}\n\n"
+        f"Auto-analysis rounds:\n{rounds_summary}\n\n"
+        f"Write all content in {report_language}. "
+        "If target language is Simplified Chinese, translate all section headings as well.\n\n"
+        "Write the final report in Markdown with exactly these sections (translated when required):\n"
+        f"{section_template}"
         "Avoid code unless a very short snippet is necessary."
     )
     chunks = (
@@ -823,6 +878,551 @@ def generate_auto_analysis_report(
     )
     content = "".join(chunks).strip()
     return content or _build_fallback_auto_report(message, loop_rounds, stop_reason)
+
+
+def generate_auto_analysis_report_bundle(
+    message: str,
+    session_history: list[dict],
+    business_knowledge: list[str],
+    session_patches: list[str],
+    loop_rounds: list[dict],
+    chart_specs: list[dict],
+    final_result_rows: list[dict],
+    stop_reason: str,
+    rounds_completed: int,
+    provider: str | None = None,
+    model: str | None = None,
+) -> dict:
+    lang_code = get_lang()
+    """
+    report_language = "English" if lang_code == "en" else "简体中文"
+    """
+    report_language = "English" if lang_code == "en" else "Simplified Chinese"
+    default_title = "Analysis Report" if lang_code == "en" else "\u5206\u6790\u62a5\u544a"
+    fallback_markdown = generate_auto_analysis_report(
+        message=message,
+        loop_rounds=loop_rounds,
+        business_knowledge=business_knowledge,
+        stop_reason=stop_reason,
+        provider=provider,
+        model=model,
+    )
+    fallback_bundle = _build_fallback_report_bundle(fallback_markdown, chart_specs)
+
+    config = load_config()
+    selected_provider = (provider or config.llm_provider).lower()
+    if selected_provider not in {"openai", "anthropic"}:
+        return fallback_bundle
+
+    knowledge_block = "\n".join(f"- {item}" for item in business_knowledge[:30]) or "- N/A"
+    patches_block = "\n".join(f"- {item}" for item in session_patches[:20]) or "- N/A"
+    history_lines: list[str] = []
+    for it in session_history[-8:]:
+        entry = f"- [{it.get('mode', 'manual')}] {it.get('message', '')}"
+        report_title = str(it.get("report_title", "") or "").strip()
+        report_summary = str(it.get("final_report_summary", "") or "").strip()
+        if report_title:
+            entry += f" | report={report_title}"
+        if report_summary:
+            entry += f" | summary={report_summary[:220]}"
+        history_lines.append(entry)
+    history_block = "\n".join(history_lines) or "- N/A"
+    rounds_summary = _build_loop_rounds_summary(loop_rounds)
+    rows_preview = json.dumps(final_result_rows[:20], ensure_ascii=False)
+    chart_ids = [f"chart_{idx}" for idx, spec in enumerate(chart_specs[:20], start=1) if isinstance(spec, dict)]
+    chart_hint = ", ".join(chart_ids) if chart_ids else "none"
+    required_chart_count = min(3, len(chart_ids))
+
+    system_prompt = (
+        "You are a principal analytics writer. Produce a complete report bundle in JSON. "
+        "The html_document must be a full standalone HTML document and may include CSS but no JavaScript."
+    )
+    user_prompt = (
+        "Return valid JSON only. No markdown fences.\n"
+        "Schema:\n"
+        "{"
+        "\"title\": string, "
+        "\"summary\": string, "
+        "\"html_document\": string, "
+        "\"chart_bindings\": [{\"chart_id\": string, \"option\": object, \"height\": number}]"
+        "}\n\n"
+        f"Original request:\n{message}\n\n"
+        f"Stop reason: {stop_reason}\n"
+        f"Rounds completed: {rounds_completed}\n\n"
+        f"Business knowledge:\n{knowledge_block}\n\n"
+        f"Session patches:\n{patches_block}\n\n"
+        f"Session history summary:\n{history_block}\n\n"
+        f"Loop rounds:\n{rounds_summary}\n\n"
+        f"Final result rows preview:\n{rows_preview}\n\n"
+        f"Output language requirement: {report_language}. Keep title/summary/body in this language.\n\n"
+        "Chart mounting rule:\n"
+        "- Place chart nodes in html_document with data-chart-id=\"...\".\n"
+        f"- Available chart ids: {chart_hint}.\n"
+        f"- REQUIRED: include at least {required_chart_count} chart placeholder nodes when chart ids are available.\n"
+        "- chart_bindings should map chart_id to ECharts option and height."
+    )
+    chunks = (
+        _call_openai_protocol(system_prompt=system_prompt, user_prompt=user_prompt, model=model, config=config)
+        if selected_provider == "openai"
+        else _call_anthropic_protocol(system_prompt=system_prompt, user_prompt=user_prompt, model=model, config=config)
+    )
+    raw = "".join(chunks).strip()
+    direct_html = _extract_html_document(raw)
+    if direct_html:
+        chart_bindings = [
+            {"chart_id": f"chart_{idx}", "option": spec, "height": 360}
+            for idx, spec in enumerate(chart_specs[:20], start=1)
+            if isinstance(spec, dict)
+        ]
+        html_document = _ensure_chart_placeholders(_sanitize_report_html(direct_html), chart_bindings)
+        return {
+            "title": default_title,
+            "summary": fallback_markdown[:500],
+            "html_document": html_document,
+            "chart_bindings": chart_bindings,
+            "legacy_markdown": fallback_markdown,
+        }
+    parsed = _parse_report_bundle_json(raw)
+    if not parsed:
+        repaired = _repair_report_bundle_json(
+            raw_response=raw,
+            fallback_markdown=fallback_markdown,
+            provider=selected_provider,
+            model=model,
+            config=config,
+            report_language=report_language,
+        )
+        parsed = _parse_report_bundle_json(repaired) if repaired else None
+    if not parsed:
+        llm_html = _generate_html_document_by_llm(
+            fallback_markdown=fallback_markdown,
+            chart_specs=chart_specs,
+            provider=selected_provider,
+            model=model,
+            config=config,
+            report_language=report_language,
+        )
+        if llm_html:
+            chart_bindings = [
+                {"chart_id": f"chart_{idx}", "option": spec, "height": 360}
+                for idx, spec in enumerate(chart_specs[:20], start=1)
+                if isinstance(spec, dict)
+            ]
+            html_document = _ensure_chart_placeholders(_sanitize_report_html(llm_html), chart_bindings)
+            return {
+                "title": default_title,
+                "summary": fallback_markdown[:500],
+                "html_document": html_document,
+                "chart_bindings": chart_bindings,
+                "legacy_markdown": fallback_markdown,
+            }
+        return fallback_bundle
+    normalized = _normalize_report_bundle(parsed, fallback_bundle, chart_specs)
+    raw_html_field = str(parsed.get("html_document", "") or "")
+    extracted_nested_html = _extract_html_from_json_like_text(raw_html_field)
+    if extracted_nested_html:
+        raw_html_field = extracted_nested_html
+        normalized = _normalize_report_bundle(
+            {**parsed, "html_document": raw_html_field},
+            fallback_bundle,
+            chart_specs,
+        )
+    if _looks_like_json_text(raw_html_field):
+        parsed_nested = _parse_report_bundle_json(raw_html_field)
+        if parsed_nested and parsed_nested.get("html_document"):
+            raw_html_field = str(parsed_nested.get("html_document", ""))
+            normalized = _normalize_report_bundle(
+                {**parsed, "html_document": raw_html_field},
+                fallback_bundle,
+                chart_specs,
+            )
+    if _looks_like_markdown_text(raw_html_field):
+        llm_html = _generate_html_document_by_llm(
+            fallback_markdown=raw_html_field,
+            chart_specs=chart_specs,
+            provider=selected_provider,
+            model=model,
+            config=config,
+            report_language=report_language,
+        )
+        if llm_html:
+            normalized["html_document"] = _sanitize_report_html(llm_html)
+    normalized["html_document"] = _ensure_chart_placeholders(
+        normalized.get("html_document", ""),
+        normalized.get("chart_bindings", []) or [],
+    )
+    return normalized
+
+
+def _parse_report_bundle_json(raw: str) -> dict | None:
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    candidates: list[str] = []
+    if text.startswith("```"):
+        fence_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL | re.IGNORECASE)
+        if fence_match:
+            candidates.append(fence_match.group(1))
+    if text.startswith("{") and text.endswith("}"):
+        candidates.append(text)
+    object_match = re.search(r"\{.*\}", text, re.DOTALL)
+    if object_match:
+        candidates.append(object_match.group(0))
+    for candidate in candidates:
+        try:
+            parsed = json.loads(candidate)
+            if isinstance(parsed, dict):
+                return parsed
+        except json.JSONDecodeError:
+            continue
+    return None
+
+
+def _extract_html_document(raw: str) -> str:
+    text = str(raw or "").strip()
+    if not text:
+        return ""
+    json_like = _extract_html_from_json_like_text(text)
+    if json_like:
+        return json_like
+    if "<html" in text.lower():
+        match = re.search(r"<!doctype html.*</html>|<html.*</html>", text, re.IGNORECASE | re.DOTALL)
+        return (match.group(0) if match else text).strip()
+    fence = re.search(r"```(?:html)?\s*(<!doctype html.*</html>|<html.*</html>)\s*```", text, re.IGNORECASE | re.DOTALL)
+    if fence:
+        return fence.group(1).strip()
+    return ""
+
+
+def _extract_html_from_json_like_text(raw: str) -> str:
+    text = str(raw or "").strip()
+    if not text:
+        return ""
+    normalized = re.sub(r"^```(?:json|html)?\s*", "", text, flags=re.IGNORECASE)
+    normalized = re.sub(r"\s*```$", "", normalized, flags=re.IGNORECASE).strip()
+
+    def parse_obj(candidate: str) -> str:
+        try:
+            parsed = json.loads(candidate)
+        except json.JSONDecodeError:
+            return ""
+        if isinstance(parsed, dict):
+            html_doc = parsed.get("html_document")
+            if isinstance(html_doc, str) and html_doc.strip():
+                return html_doc.strip()
+        return ""
+
+    parsed_html = parse_obj(normalized)
+    if parsed_html:
+        return parsed_html
+
+    first_brace = normalized.find("{")
+    last_brace = normalized.rfind("}")
+    if first_brace >= 0 and last_brace > first_brace:
+        parsed_html = parse_obj(normalized[first_brace : last_brace + 1])
+        if parsed_html:
+            return parsed_html
+
+    field_match = re.search(
+        r'"html_document"\s*:\s*"([\s\S]*?)"\s*(?:,\s*"chart_bindings"|,\s*"summary"|,\s*"title"|\})',
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    if field_match:
+        raw_val = field_match.group(1)
+        try:
+            return json.loads(f'"{raw_val}"').strip()
+        except json.JSONDecodeError:
+            return raw_val.strip()
+    return ""
+
+
+def _looks_like_markdown_text(text: str) -> bool:
+    raw = str(text or "").strip()
+    if not raw:
+        return False
+    if "<html" in raw.lower() or "<body" in raw.lower():
+        return False
+    if re.search(r"<[a-zA-Z][^>]*>", raw):
+        return False
+    markers = ("## ", "# ", "- ", "1. ", "|---", "**")
+    return any(marker in raw for marker in markers)
+
+
+def _looks_like_json_text(text: str) -> bool:
+    raw = str(text or "").strip()
+    if not raw:
+        return False
+    if not (raw.startswith("{") and raw.endswith("}")):
+        return False
+    try:
+        parsed = json.loads(raw)
+        return isinstance(parsed, dict)
+    except json.JSONDecodeError:
+        return False
+
+
+def _repair_report_bundle_json(
+    raw_response: str,
+    fallback_markdown: str,
+    provider: str,
+    model: str | None,
+    config: AppConfig,
+    report_language: str,
+) -> str:
+    system_prompt = (
+        "You are a strict JSON formatter. Convert the input into valid JSON only. "
+        "No prose, no code fences."
+    )
+    user_prompt = (
+        "Output exactly one JSON object with keys: title, summary, html_document, chart_bindings.\n"
+        "If the input is markdown, convert it to an HTML document for html_document.\n"
+        "html_document must include chart placeholders using data-chart-id when chart ids are present.\n"
+        "chart_bindings can be an empty array when unavailable.\n\n"
+        f"Language requirement: {report_language}.\n\n"
+        f"Raw response to repair:\n{raw_response}\n\n"
+        f"Fallback markdown content:\n{fallback_markdown}\n"
+    )
+    chunks = (
+        _call_openai_protocol(system_prompt=system_prompt, user_prompt=user_prompt, model=model, config=config)
+        if provider == "openai"
+        else _call_anthropic_protocol(system_prompt=system_prompt, user_prompt=user_prompt, model=model, config=config)
+    )
+    return "".join(chunks).strip()
+
+
+def _generate_html_document_by_llm(
+    fallback_markdown: str,
+    chart_specs: list[dict],
+    provider: str,
+    model: str | None,
+    config: AppConfig,
+    report_language: str,
+) -> str:
+    chart_ids = [f"chart_{idx}" for idx, spec in enumerate(chart_specs[:20], start=1) if isinstance(spec, dict)]
+    chart_hint = ", ".join(chart_ids) if chart_ids else "none"
+    system_prompt = (
+        "You are a data-report web designer. Return a standalone HTML document only. "
+        "Use semantic layout and polished CSS. Do not include JavaScript."
+    )
+    user_prompt = (
+        "Convert the following report content into a complete HTML document.\n"
+        "Requirements:\n"
+        "- Return only HTML text.\n"
+        "- Use clear visual hierarchy.\n"
+        "- Keep content faithful to source.\n"
+        f"- Use {report_language} for the whole document text.\n"
+        "- You MUST include chart placeholders using available chart ids: <div data-chart-id=\"...\"></div>.\n"
+        f"- REQUIRED: include at least {min(3, len(chart_ids))} chart placeholders when chart ids are available.\n"
+        f"Available chart ids: {chart_hint}\n\n"
+        f"Source report markdown:\n{fallback_markdown}\n"
+    )
+    chunks = (
+        _call_openai_protocol(system_prompt=system_prompt, user_prompt=user_prompt, model=model, config=config)
+        if provider == "openai"
+        else _call_anthropic_protocol(system_prompt=system_prompt, user_prompt=user_prompt, model=model, config=config)
+    )
+    html_text = "".join(chunks).strip()
+    extracted = _extract_html_document(html_text)
+    return extracted
+
+
+def _ensure_chart_placeholders(html_document: str, chart_bindings: list[dict]) -> str:
+    html_text = str(html_document or "")
+    if not html_text or not chart_bindings:
+        return html_text
+    existing_ids = set(re.findall(r'data-chart-id=["\']([^"\']+)["\']', html_text, flags=re.IGNORECASE))
+    missing_ids = [
+        str(item.get("chart_id", "")).strip()
+        for item in chart_bindings
+        if isinstance(item, dict) and str(item.get("chart_id", "")).strip() and str(item.get("chart_id", "")).strip() not in existing_ids
+    ]
+    if not missing_ids:
+        return html_text
+    section_items = "".join(
+        (
+            f'<section style="margin-top:18px;">'
+            f'<h3 style="margin:0 0 8px;">Chart {idx}</h3>'
+            f'<div data-chart-id="{html.escape(chart_id)}"></div>'
+            f"</section>"
+        )
+        for idx, chart_id in enumerate(missing_ids, start=1)
+    )
+    chart_section = (
+        '<section style="margin-top:22px;">'
+        '<h2 style="margin:0 0 10px;">Charts</h2>'
+        f"{section_items}"
+        "</section>"
+    )
+    if "</body>" in html_text.lower():
+        return re.sub(r"</body>", chart_section + "</body>", html_text, count=1, flags=re.IGNORECASE)
+    return html_text + chart_section
+
+
+def _normalize_report_bundle(bundle: dict, fallback_bundle: dict, chart_specs: list[dict]) -> dict:
+    title = str(bundle.get("title", "") or "").strip() or str(fallback_bundle.get("title", "Auto Analysis Report"))
+    summary = str(bundle.get("summary", "") or "").strip() or str(fallback_bundle.get("summary", ""))
+    raw_html = str(bundle.get("html_document", "") or "").strip()
+    html_document = _sanitize_report_html(raw_html) if raw_html else str(fallback_bundle.get("html_document", ""))
+    if not html_document:
+        html_document = _markdown_to_basic_html(str(fallback_bundle.get("legacy_markdown", "") or ""))
+    if "<html" not in html_document.lower():
+        html_document = (
+            "<!doctype html><html lang=\"en\"><head><meta charset=\"UTF-8\"/>"
+            "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\"/>"
+            f"<title>{html.escape(title)}</title></head><body>{html_document}</body></html>"
+        )
+
+    normalized_bindings: list[dict] = []
+    for item in bundle.get("chart_bindings", []) or []:
+        if not isinstance(item, dict):
+            continue
+        chart_id = str(item.get("chart_id", "") or "").strip()
+        option = item.get("option")
+        if not chart_id or not isinstance(option, dict):
+            continue
+        try:
+            height = int(item.get("height", 360))
+        except (TypeError, ValueError):
+            height = 360
+        normalized_bindings.append(
+            {
+                "chart_id": chart_id,
+                "option": option,
+                "height": min(1200, max(200, height)),
+            }
+        )
+
+    if not normalized_bindings:
+        normalized_bindings = [
+            {"chart_id": f"chart_{idx}", "option": spec, "height": 360}
+            for idx, spec in enumerate(chart_specs[:20], start=1)
+            if isinstance(spec, dict)
+        ]
+
+    return {
+        "title": title,
+        "summary": summary[:2000],
+        "html_document": html_document,
+        "chart_bindings": normalized_bindings,
+        "legacy_markdown": str(fallback_bundle.get("legacy_markdown", "") or ""),
+    }
+
+
+def _build_fallback_report_bundle(markdown_text: str, chart_specs: list[dict]) -> dict:
+    safe_markdown = str(markdown_text or "").strip()
+    chart_bindings = [
+        {"chart_id": f"chart_{idx}", "option": spec, "height": 360}
+        for idx, spec in enumerate(chart_specs[:20], start=1)
+        if isinstance(spec, dict)
+    ]
+    chart_slots = "".join(
+        f'<section style="margin-top:20px;"><h2 style="margin:0 0 8px;">Chart {idx}</h2><div data-chart-id="chart_{idx}"></div></section>'
+        for idx, _ in enumerate(chart_bindings, start=1)
+    )
+    html_document = _markdown_to_basic_html(safe_markdown, chart_slots)
+    return {
+        "title": "Analysis Report" if get_lang() == "en" else "\u5206\u6790\u62a5\u544a",
+        "summary": safe_markdown[:500],
+        "html_document": html_document,
+        "chart_bindings": chart_bindings,
+        "legacy_markdown": safe_markdown,
+    }
+
+
+def _markdown_to_basic_html(markdown_text: str, extra_blocks: str = "") -> str:
+    rendered = _render_markdown_like_html(markdown_text)
+    return (
+        "<!doctype html><html lang=\"en\"><head><meta charset=\"UTF-8\"/>"
+        "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\"/>"
+        "<title>Auto Analysis Report</title>"
+        "<style>body{font-family:Inter,Arial,sans-serif;margin:0;background:#f8fafc;color:#0f172a}"
+        ".paper{max-width:1080px;margin:24px auto;padding:28px;background:#fff;border:1px solid #e2e8f0;border-radius:14px}"
+        ".content{font-size:14px;line-height:1.7}"
+        ".content h1,.content h2,.content h3{margin:18px 0 10px;line-height:1.35}"
+        ".content p{margin:10px 0}"
+        ".content ul,.content ol{margin:8px 0 12px 22px}"
+        ".content li{margin:4px 0}"
+        ".content code{padding:1px 5px;border-radius:4px;background:#e2e8f0;font-family:Consolas,monospace}"
+        ".content hr{border:none;border-top:1px solid #e2e8f0;margin:18px 0}"
+        "@media print{body{background:#fff}.paper{border:none;max-width:none;margin:0;padding:0}}</style>"
+        "</head><body><main class=\"paper\">"
+        "<h1 style=\"margin-top:0;\">Auto Analysis Report</h1>"
+        f"<div class=\"content\">{rendered}</div>"
+        f"{extra_blocks}"
+        "</main></body></html>"
+    )
+
+
+def _render_markdown_like_html(markdown_text: str) -> str:
+    def inline_render(text: str) -> str:
+        escaped = html.escape(text)
+        escaped = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", escaped)
+        escaped = re.sub(r"`([^`]+)`", r"<code>\1</code>", escaped)
+        return escaped
+
+    lines = str(markdown_text or "").splitlines()
+    out: list[str] = []
+    list_mode: str | None = None
+
+    def close_list() -> None:
+        nonlocal list_mode
+        if list_mode == "ul":
+            out.append("</ul>")
+        elif list_mode == "ol":
+            out.append("</ol>")
+        list_mode = None
+
+    for raw in lines:
+        line = raw.rstrip()
+        stripped = line.strip()
+        if not stripped:
+            close_list()
+            continue
+        if stripped == "---":
+            close_list()
+            out.append("<hr/>")
+            continue
+        if stripped.startswith("### "):
+            close_list()
+            out.append(f"<h3>{inline_render(stripped[4:])}</h3>")
+            continue
+        if stripped.startswith("## "):
+            close_list()
+            out.append(f"<h2>{inline_render(stripped[3:])}</h2>")
+            continue
+        if stripped.startswith("# "):
+            close_list()
+            out.append(f"<h1>{inline_render(stripped[2:])}</h1>")
+            continue
+        if re.match(r"^\d+\.\s+", stripped):
+            if list_mode != "ol":
+                close_list()
+                out.append("<ol>")
+                list_mode = "ol"
+            item = re.sub(r"^\d+\.\s+", "", stripped)
+            out.append(f"<li>{inline_render(item)}</li>")
+            continue
+        if stripped.startswith("- "):
+            if list_mode != "ul":
+                close_list()
+                out.append("<ul>")
+                list_mode = "ul"
+            out.append(f"<li>{inline_render(stripped[2:])}</li>")
+            continue
+        close_list()
+        out.append(f"<p>{inline_render(stripped)}</p>")
+
+    close_list()
+    return "\n".join(out)
+
+
+def _sanitize_report_html(document: str) -> str:
+    text = str(document or "")
+    text = re.sub(r"<script\b[^<]*(?:(?!</script>)<[^<]*)*</script>", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\son[a-z]+\s*=\s*(['\"]).*?\1", "", text, flags=re.IGNORECASE | re.DOTALL)
+    text = re.sub(r'(href|src)\s*=\s*([\"\'])\s*javascript:[^\"\']*\2', r"\1=\2#\2", text, flags=re.IGNORECASE)
+    return text
 
 
 def _build_loop_rounds_summary(loop_rounds: list[dict]) -> str:
@@ -867,6 +1467,7 @@ def _build_loop_rounds_summary(loop_rounds: list[dict]) -> str:
 
 
 def _build_fallback_auto_report(message: str, loop_rounds: list[dict], stop_reason: str) -> str:
+    is_en = get_lang() == "en"
     findings: list[str] = []
     suggestions: list[str] = []
     pending: list[str] = []
@@ -901,26 +1502,51 @@ def _build_fallback_auto_report(message: str, loop_rounds: list[dict], stop_reas
         )
 
     if not findings:
-        findings.append("- The auto-analysis did not produce stable conclusions yet. Validate against raw data before acting.")
+        findings.append(
+            "- The auto-analysis did not produce stable conclusions yet. Validate against raw data before acting."
+            if is_en
+            else "- 自动分析尚未形成稳定结论，建议先基于原始数据复核后再落地。"
+        )
     if not suggestions:
-        suggestions.append("- Add tighter business constraints or a time range, then rerun one-click analysis.")
+        suggestions.append(
+            "- Add tighter business constraints or a time range, then rerun one-click analysis."
+            if is_en
+            else "- 建议补充更明确的业务约束或时间范围后，再次执行一键分析。"
+        )
     if not pending:
-        pending.append("- No additional open validation questions.")
+        pending.append("- No additional open validation questions." if is_en else "- 当前暂无新增待验证问题。")
 
+    if is_en:
+        return (
+            "## Executive Summary\n"
+            f"- Question: {message}\n"
+            f"- Stop Reason: {stop_reason}\n"
+            f"- Completed Rounds: {len(loop_rounds)}\n\n"
+            "## Key Findings\n"
+            f"{chr(10).join(findings)}\n\n"
+            "## Evidence And Analysis Process\n"
+            f"{chr(10).join(evidence) if evidence else '- No execution trace available.'}\n\n"
+            "## Charts And Data Notes\n"
+            f"- Generated {chart_count} charts.\n\n"
+            "## Business Recommendations\n"
+            f"{chr(10).join(suggestions)}\n\n"
+            "## Remaining Validation Questions\n"
+            f"{chr(10).join(pending)}"
+        )
     return (
-        "## Executive Summary\n"
-        f"- Question: {message}\n"
-        f"- Stop Reason: {stop_reason}\n"
-        f"- Completed Rounds: {len(loop_rounds)}\n\n"
-        "## Key Findings\n"
+        "## 执行摘要\n"
+        f"- 问题: {message}\n"
+        f"- 停止原因: {stop_reason}\n"
+        f"- 完成轮次: {len(loop_rounds)}\n\n"
+        "## 关键发现\n"
         f"{chr(10).join(findings)}\n\n"
-        "## Evidence And Analysis Process\n"
-        f"{chr(10).join(evidence) if evidence else '- No execution trace available.'}\n\n"
-        "## Charts And Data Notes\n"
-        f"- Generated {chart_count} charts.\n\n"
-        "## Business Recommendations\n"
+        "## 证据与分析过程\n"
+        f"{chr(10).join(evidence) if evidence else '- 暂无可用执行轨迹。'}\n\n"
+        "## 图表与数据说明\n"
+        f"- 共生成 {chart_count} 张图表。\n\n"
+        "## 业务建议\n"
         f"{chr(10).join(suggestions)}\n\n"
-        "## Remaining Validation Questions\n"
+        "## 待验证问题\n"
         f"{chr(10).join(pending)}"
     )
 

@@ -1348,16 +1348,28 @@ function renderAutoAnalysisCard(wrapper, state) {
 
   }).join("");
 
-  const reportSection = state.report
-
-    ? `<div style="margin-top:16px;padding:16px;border:1px solid #dbeafe;border-radius:12px;background:#f8fbff;">
-
-        <div style="font-weight:700;color:#1d4ed8;margin-bottom:10px;">最终分析报告</div>
-
-        <div class="markdown-body">${renderMarkdownContent(state.report)}</div>
-
+  const reportTitle = state.reportTitle || "自动分析报告";
+  const reportSummary = (state.reportSummary || "").trim();
+  const reportLang = (window.i18n && i18n.lang) || localStorage.getItem("lang") || "zh";
+  const reportUrlBase = state.reportUrl || "";
+  const reportUrl = reportUrlBase
+    ? (reportUrlBase.includes("lang=")
+      ? reportUrlBase
+      : `${reportUrlBase}${reportUrlBase.includes("?") ? "&" : "?"}lang=${encodeURIComponent(reportLang)}`)
+    : "";
+  const reportActions = reportUrl
+    ? `<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;">
+        <button class="btn btn-outline btn-sm open-report-btn" data-url="${escapeHtml(reportUrl)}"><i class="fa-solid fa-arrow-up-right-from-square"></i> 打开完整报告</button>
+        <button class="btn btn-outline btn-sm print-report-btn" data-url="${escapeHtml(reportUrl)}"><i class="fa-solid fa-file-pdf"></i> 导出 PDF</button>
       </div>`
-
+    : `<div style="font-size:12px;color:var(--text-muted);margin-top:8px;">报告生成后可打开完整报告与导出 PDF</div>`;
+  const reportSection = (reportSummary || reportTitle || reportUrl)
+    ? `<div style="margin-top:16px;padding:16px;border:1px solid #dbeafe;border-radius:12px;background:#f8fbff;">
+        <div style="font-weight:700;color:#1d4ed8;margin-bottom:8px;">${escapeHtml(reportTitle)}</div>
+        <div style="font-size:13px;line-height:1.6;color:#334155;">${reportSummary ? escapeHtml(reportSummary) : "报告摘要生成中..."}</div>
+        ${reportActions}
+        <div style="font-size:12px;color:var(--text-muted);margin-top:8px;">可继续在聊天里追问该报告，或再次发起一键分析。</div>
+      </div>`
     : "";
 
   const statusLine = `
@@ -1371,6 +1383,21 @@ function renderAutoAnalysisCard(wrapper, state) {
   `;
 
   updateAiCard(wrapper, state.title || "一键分析", `${statusLine}${reportSection}${roundsHtml}`, state.liveThought || null);
+
+  wrapper.querySelectorAll(".open-report-btn").forEach((btn) => {
+    btn.onclick = () => {
+      const url = btn.getAttribute("data-url");
+      if (url) window.open(url, "_blank", "noopener");
+    };
+  });
+  wrapper.querySelectorAll(".print-report-btn").forEach((btn) => {
+    btn.onclick = () => {
+      const url = btn.getAttribute("data-url");
+      if (!url) return;
+      const printUrl = `${url}${url.includes("?") ? "&" : "?"}print=1`;
+      window.open(printUrl, "_blank", "noopener");
+    };
+  });
 
   if (chartRefs.length > 0) {
 
@@ -1398,6 +1425,7 @@ function renderAutoAnalysisCard(wrapper, state) {
 
 
 function replayAutoAnalysisIteration(iter, wrapper) {
+  const reportLang = (window.i18n && i18n.lang) || localStorage.getItem("lang") || "zh";
 
   renderAutoAnalysisCard(wrapper, {
 
@@ -1407,7 +1435,11 @@ function replayAutoAnalysisIteration(iter, wrapper) {
 
     stopReason: (iter.report_meta || {}).stop_reason || "",
 
-    report: iter.final_report_md || "",
+    reportTitle: iter.report_title || "自动分析报告",
+
+    reportSummary: iter.final_report_summary || (iter.final_report_md || "").slice(0, 500),
+
+    reportUrl: iter.iteration_id ? `/web/report.html?iteration_id=${encodeURIComponent(iter.iteration_id)}&lang=${encodeURIComponent(reportLang)}` : "",
 
     rounds: iter.loop_rounds || [],
 
@@ -1720,8 +1752,6 @@ async function handleAutoAnalyze() {
 
   const rawValue = input.value.trim();
 
-  if (!rawValue) return;
-
   const isKnowledge = rawValue.startsWith(i18n.t('knowledge_prefix') || "知识:") || rawValue.startsWith("业务知识:") || rawValue.startsWith("Knowledge:");
 
   const isFeedback = rawValue.startsWith(i18n.t('feedback_prefix') || "反馈:") || rawValue.startsWith("纠正:") || rawValue.startsWith("Feedback:");
@@ -1748,7 +1778,7 @@ async function handleAutoAnalyze() {
 
   if (welcomeCard) welcomeCard.style.display = "none";
 
-  addUserMessage(rawValue);
+  if (rawValue) addUserMessage(rawValue);
 
   input.value = "";
 
@@ -1766,7 +1796,7 @@ async function handleAutoAnalyze() {
 
     sandbox_id: sandboxId,
 
-    message: directive.message || rawValue,
+    message: directive.message || rawValue || "",
 
     session_id: sessionId || null,
 
@@ -1794,7 +1824,11 @@ async function handleAutoAnalyze() {
 
     stopReason: "",
 
-    report: "",
+    reportTitle: "",
+
+    reportSummary: "",
+
+    reportUrl: "",
 
     rounds: [],
 
@@ -1854,11 +1888,17 @@ async function handleAutoAnalyze() {
 
             const data = payload.data || {};
 
-            const phase = data.phase === "planning" ? "规划中" : "思考中";
+            const phaseMap = {
+              planning: "规划中",
+              thinking: "思考中",
+              report_generating: "报告生成中",
+            };
+            const phase = phaseMap[data.phase] || "处理中";
 
             state.status = `第 ${data.round || 0} 轮 ${phase}`;
 
             if (data.phase === "thinking") state.liveThought = data.message || "";
+            else state.liveThought = "";
 
             renderAutoAnalysisCard(wrapper, state);
 
@@ -1878,7 +1918,9 @@ async function handleAutoAnalyze() {
 
             const data = payload.data || {};
 
-            state.report = data.markdown || "";
+            state.reportTitle = data.title || state.reportTitle || "自动分析报告";
+
+            state.reportSummary = data.summary || state.reportSummary || "";
 
             state.stopReason = data.stop_reason || "";
 
@@ -1897,6 +1939,16 @@ async function handleAutoAnalyze() {
             state.stopReason = data.stop_reason || state.stopReason;
 
             state.status = `已完成 ${data.rounds_completed || state.rounds.length} 轮`;
+
+            const reportLang = (window.i18n && i18n.lang) || localStorage.getItem("lang") || "zh";
+            const baseUrl = data.report_url || state.reportUrl || "";
+            state.reportUrl = baseUrl
+              ? (baseUrl.includes("lang=")
+                ? baseUrl
+                : `${baseUrl}${baseUrl.includes("?") ? "&" : "?"}lang=${encodeURIComponent(reportLang)}`)
+              : "";
+
+            state.reportTitle = data.report_title || state.reportTitle || "自动分析报告";
 
             renderAutoAnalysisCard(wrapper, state);
 

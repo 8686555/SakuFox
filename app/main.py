@@ -1,3 +1,4 @@
+import html
 import json
 import io
 import uuid
@@ -9,11 +10,12 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi import Request
 
-from app.i18n import set_lang, t
+from app.i18n import get_lang, set_lang, t
 
 from app.agent import (
     run_analysis_iteration,
     generate_auto_analysis_report,
+    generate_auto_analysis_report_bundle,
     generate_data_insight,
     generate_skill_proposal,
 )
@@ -155,6 +157,98 @@ def _build_auto_history_entry(round_payload: dict) -> dict:
     }
 
 
+def _build_iteration_context_history(iterations: list[dict]) -> list[dict]:
+    context: list[dict] = []
+    for it in iterations:
+        report_meta = it.get("report_meta", {}) or {}
+        context.append(
+            {
+                "iteration_id": it.get("iteration_id"),
+                "mode": it.get("mode", "manual"),
+                "message": str(it.get("message", "") or "")[:500],
+                "conclusions": it.get("conclusions", []) or [],
+                "hypotheses": it.get("hypotheses", []) or [],
+                "report_title": str(it.get("report_title", "") or "")[:200],
+                "final_report_summary": str(it.get("final_report_summary", "") or "")[:1200],
+                "report_meta": {
+                    "stop_reason": report_meta.get("stop_reason"),
+                    "rounds_completed": report_meta.get("rounds_completed"),
+                    "max_rounds_hit": report_meta.get("max_rounds_hit"),
+                },
+            }
+        )
+    return context
+
+
+def _build_default_auto_seed_message(selected_tables: list[str], selected_files: list[str]) -> str:
+    table_text = ", ".join(selected_tables[:8]) if selected_tables else "current sandbox tables"
+    file_text = ", ".join(selected_files[:8]) if selected_files else "selected uploaded files if available"
+    return (
+        "Run one-click autonomous analysis for the currently selected data assets. "
+        "Start with data profiling and quality checks, then detect anomalies and latent patterns, "
+        "validate key findings with SQL/Python evidence, and conclude with prioritized actionable recommendations. "
+        f"Priority tables: {table_text}. Priority files: {file_text}."
+    )
+
+
+def _build_iteration_report_url(iteration_id: str) -> str:
+    return f"/web/report.html?iteration_id={iteration_id}"
+
+
+def _build_report_bundle_from_markdown(markdown_text: str, chart_specs: list[dict]) -> dict:
+    default_title = "Analysis Report" if get_lang() == "en" else "分析报告"
+    safe_md = str(markdown_text or "").strip()
+    escaped = html.escape(safe_md).replace("\n", "<br/>")
+    chart_bindings = [
+        {"chart_id": f"chart_{idx}", "option": spec, "height": 360}
+        for idx, spec in enumerate(chart_specs[:20], start=1)
+        if isinstance(spec, dict)
+    ]
+    chart_slots = "".join(
+        f'<section style="margin-top:18px;"><h2 style="margin:0 0 8px;">Chart {idx}</h2><div data-chart-id="chart_{idx}"></div></section>'
+        for idx, _ in enumerate(chart_bindings, start=1)
+    )
+    html_doc = (
+        "<!doctype html><html lang=\"en\"><head><meta charset=\"UTF-8\"/>"
+        "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\"/>"
+        f"<title>{html.escape(default_title)}</title>"
+        "<style>body{font-family:Inter,Arial,sans-serif;margin:0;background:#f8fafc;color:#0f172a}"
+        ".paper{max-width:1080px;margin:24px auto;padding:28px;background:#fff;border:1px solid #e2e8f0;border-radius:14px}"
+        "@media print{body{background:#fff}.paper{border:none;max-width:none;margin:0;padding:0}}</style>"
+        "</head><body><main class=\"paper\">"
+        f"<h1>{html.escape(default_title)}</h1>"
+        f"<div>{escaped}</div>"
+        f"{chart_slots}"
+        "</main></body></html>"
+    )
+    return {
+        "title": default_title,
+        "summary": safe_md[:500],
+        "html_document": html_doc,
+        "chart_bindings": chart_bindings,
+        "legacy_markdown": safe_md,
+    }
+
+
+def _build_bootstrap_auto_steps(selected_tables: list[str], selected_files: list[str]) -> list[dict]:
+    steps: list[dict] = []
+    for table_name in selected_tables[:3]:
+        tbl = str(table_name).strip()
+        if not tbl:
+            continue
+        steps.append({"tool": "sql", "code": f"SELECT * FROM {tbl} LIMIT 200"})
+        steps.append({"tool": "sql", "code": f"SELECT COUNT(*) AS row_count FROM {tbl}"})
+    if not steps and selected_files:
+        # Let the model-driven python pipeline inspect selected local files when no table is chosen.
+        steps.append(
+            {
+                "tool": "python",
+                "code": "print('Bootstrap file exploration enabled by system fallback.')",
+            }
+        )
+    return steps
+
+
 def _merge_tools_used(loop_rounds: list[dict]) -> list[str]:
     tools: list[str] = []
     for round_payload in loop_rounds:
@@ -221,11 +315,16 @@ def _build_auto_iteration_payload(
     selected_tables: list[str],
     session: dict,
     loop_rounds: list[dict],
-    report_md: str,
+    report_bundle: dict,
     stop_reason: str,
     max_rounds: int,
 ) -> dict:
     max_rounds_hit = stop_reason == "max_rounds_reached"
+    report_title = str(report_bundle.get("title", "") or "")
+    final_report_summary = str(report_bundle.get("summary", "") or "")
+    final_report_html = str(report_bundle.get("html_document", "") or "")
+    final_report_chart_bindings = report_bundle.get("chart_bindings", []) or []
+    final_report_md = str(report_bundle.get("legacy_markdown", "") or "")
     return {
         "mode": "auto_analysis",
         "message": message,
@@ -238,11 +337,16 @@ def _build_auto_iteration_payload(
         "result_rows": _get_last_result_rows(loop_rounds)[:100],
         "chart_specs": _collect_all_charts(loop_rounds),
         "loop_rounds": loop_rounds,
-        "final_report_md": report_md,
+        "final_report_md": final_report_md,
+        "report_title": report_title,
+        "final_report_html": final_report_html,
+        "final_report_summary": final_report_summary,
+        "final_report_chart_bindings": final_report_chart_bindings,
         "report_meta": {
             "stop_reason": stop_reason,
             "rounds_completed": len(loop_rounds),
             "max_rounds_hit": max_rounds_hit,
+            "report_generated": bool(final_report_html or final_report_summary),
         },
         "session_id": session_id,
         "session_patches": list(session.get("patches", [])),
@@ -358,7 +462,8 @@ def iterate(req: IterateRequest, user: User = Depends(get_current_user)):
                     message = f"[{prefix}: {h['text']}] {message}"
                     break
 
-    iteration_history = store.get_iteration_history(user.user_id, session_id)
+    raw_iteration_history = store.get_iteration_history(user.user_id, session_id)
+    iteration_history = _build_iteration_context_history(raw_iteration_history)
     
     # Merge sandbox knowledge sources into a single context payload.
     business_knowledge = _collect_business_knowledge(sandbox, req.sandbox_id, list(session.get("patches", [])))
@@ -419,6 +524,10 @@ def iterate(req: IterateRequest, user: User = Depends(get_current_user)):
                     "chart_specs": exec_result.get("chart_specs", []),
                     "loop_rounds": [],
                     "final_report_md": "",
+                    "report_title": "",
+                    "final_report_html": "",
+                    "final_report_summary": "",
+                    "final_report_chart_bindings": [],
                     "report_meta": {},
                 })
 
@@ -439,6 +548,10 @@ def iterate(req: IterateRequest, user: User = Depends(get_current_user)):
                     "session_patches": list(session.get("patches", [])),
                     "loop_rounds": [],
                     "final_report_md": "",
+                    "report_title": "",
+                    "final_report_html": "",
+                    "final_report_summary": "",
+                    "final_report_chart_bindings": [],
                     "report_meta": {},
                 })
 
@@ -474,10 +587,11 @@ def auto_analyze(req: AutoAnalyzeRequest, user: User = Depends(get_current_user)
 
     config = load_config()
     session_id, session = store.get_or_create_session(user.user_id, req.session_id)
+    incoming_message = str(req.message or "").strip()
 
     updates = {}
     if not session.get("title"):
-        updates["title"] = req.message[:40].strip()
+        updates["title"] = (incoming_message or "One-click analysis")[:40]
     if not session.get("sandbox_id"):
         updates["sandbox_id"] = req.sandbox_id
     if updates:
@@ -490,21 +604,25 @@ def auto_analyze(req: AutoAnalyzeRequest, user: User = Depends(get_current_user)
         user=user,
         max_selected_tables=config.max_selected_tables,
     )
+    selected_files = req.selected_files or sandbox.get("selected_files", []) or []
     analysis_sandbox = {
         **sandbox,
         "tables": selected_tables,
-        "selected_files": req.selected_files or [],
+        "selected_files": selected_files,
     }
 
-    message = req.message
-    historical_iterations = store.get_iteration_history(user.user_id, session_id)
+    message = incoming_message
+    historical_iterations_raw = store.get_iteration_history(user.user_id, session_id)
+    historical_iterations = _build_iteration_context_history(historical_iterations_raw)
     if req.hypothesis_id:
-        for it in reversed(historical_iterations):
+        for it in reversed(historical_iterations_raw):
             for h in it.get("hypotheses", []):
                 if isinstance(h, dict) and h.get("id") == req.hypothesis_id:
                     prefix = t("msg_based_on_hypothesis", default="基于上轮猜想")
                     message = f"[{prefix}: {h['text']}] {message}"
                     break
+    if not message.strip():
+        message = _build_default_auto_seed_message(selected_tables, selected_files)
 
     business_knowledge = _collect_business_knowledge(sandbox, req.sandbox_id, list(session.get("patches", [])))
 
@@ -512,7 +630,7 @@ def auto_analyze(req: AutoAnalyzeRequest, user: User = Depends(get_current_user)
         loop_rounds: list[dict] = []
         loop_history = list(historical_iterations)
         stop_reason = "model_stopped_using_tools"
-        report_md = ""
+        report_bundle: dict = {}
         direct_report_md = ""
         try:
             for round_index in range(1, req.max_rounds + 1):
@@ -559,12 +677,22 @@ def auto_analyze(req: AutoAnalyzeRequest, user: User = Depends(get_current_user)
                 execution_result = {"rows": [], "tables": [], "chart_specs": [], "step_results": []}
                 has_tool_calls = bool(result_data.get("steps"))
                 direct_report_md = str(result_data.get("direct_report", "") or "").strip()
+                if not has_tool_calls and round_index == 1 and not direct_report_md:
+                    bootstrap_steps = _build_bootstrap_auto_steps(selected_tables, selected_files)
+                    if bootstrap_steps:
+                        result_data = {
+                            **result_data,
+                            "steps": bootstrap_steps,
+                            "tools_used": ["execute_select_sql"] if any(s.get("tool") == "sql" for s in bootstrap_steps) else ["python_interpreter"],
+                            "explanation": "system bootstrap: first round had no tool plan; injected exploration steps",
+                        }
+                        has_tool_calls = True
                 if has_tool_calls:
                     execution_result = _execute_analysis_steps(
                         result_data=result_data,
                         sandbox=sandbox,
                         selected_tables=selected_tables,
-                        selected_files=req.selected_files,
+                        selected_files=selected_files,
                         sandbox_id=req.sandbox_id,
                     )
                 elif _is_json_parse_failure_result(result_data):
@@ -618,18 +746,43 @@ def auto_analyze(req: AutoAnalyzeRequest, user: User = Depends(get_current_user)
                     }, ensure_ascii=False) + "\n"
                     break
 
-            report_md = direct_report_md or generate_auto_analysis_report(
+            chart_specs = _collect_all_charts(loop_rounds)
+            report_bundle = generate_auto_analysis_report_bundle(
                 message=message,
-                loop_rounds=loop_rounds,
+                session_history=historical_iterations,
                 business_knowledge=business_knowledge,
+                session_patches=list(session.get("patches", [])),
+                loop_rounds=loop_rounds,
+                chart_specs=chart_specs,
+                final_result_rows=_get_last_result_rows(loop_rounds),
                 stop_reason=stop_reason,
+                rounds_completed=len(loop_rounds),
                 provider=req.provider,
                 model=req.model,
-            )
+            ) or {}
+            if direct_report_md:
+                report_bundle["legacy_markdown"] = direct_report_md
+                report_bundle["summary"] = direct_report_md[:500]
+            if not report_bundle.get("legacy_markdown"):
+                report_bundle["legacy_markdown"] = generate_auto_analysis_report(
+                    message=message,
+                    loop_rounds=loop_rounds,
+                    business_knowledge=business_knowledge,
+                    stop_reason=stop_reason,
+                    provider=req.provider,
+                    model=req.model,
+                )
+            if not report_bundle.get("html_document"):
+                report_bundle = _build_report_bundle_from_markdown(
+                    report_bundle.get("legacy_markdown", ""),
+                    chart_specs,
+                )
             yield json.dumps({
                 "type": "report",
                 "data": {
-                    "markdown": report_md,
+                    "title": report_bundle.get("title", "Auto Analysis Report"),
+                    "summary": report_bundle.get("summary", ""),
+                    "markdown": report_bundle.get("legacy_markdown", ""),
                     "stop_reason": stop_reason,
                     "rounds_completed": len(loop_rounds),
                 },
@@ -642,13 +795,14 @@ def auto_analyze(req: AutoAnalyzeRequest, user: User = Depends(get_current_user)
                 selected_tables=selected_tables,
                 session=session,
                 loop_rounds=loop_rounds,
-                report_md=report_md,
+                report_bundle=report_bundle,
                 stop_reason=stop_reason,
                 max_rounds=req.max_rounds,
             )
             last_result = (loop_rounds[-1].get("result") if loop_rounds else {}) or {}
 
             iteration_id = store.append_iteration(user.user_id, session_id, iteration_payload)
+            report_url = _build_iteration_report_url(iteration_id)
             proposal_id = store.create_proposal({
                 "user_id": user.user_id,
                 "session_id": session_id,
@@ -664,7 +818,11 @@ def auto_analyze(req: AutoAnalyzeRequest, user: User = Depends(get_current_user)
                 "selected_tables": selected_tables,
                 "session_patches": list(session.get("patches", [])),
                 "loop_rounds": loop_rounds,
-                "final_report_md": report_md,
+                "final_report_md": iteration_payload.get("final_report_md", ""),
+                "report_title": iteration_payload.get("report_title", ""),
+                "final_report_html": iteration_payload.get("final_report_html", ""),
+                "final_report_summary": iteration_payload.get("final_report_summary", ""),
+                "final_report_chart_bindings": iteration_payload.get("final_report_chart_bindings", []),
                 "report_meta": iteration_payload.get("report_meta", {}),
             })
 
@@ -678,6 +836,8 @@ def auto_analyze(req: AutoAnalyzeRequest, user: User = Depends(get_current_user)
                     "rounds_completed": len(loop_rounds),
                     "max_rounds_hit": iteration_payload.get("report_meta", {}).get("max_rounds_hit", False),
                     "result_count": len(_get_last_result_rows(loop_rounds)),
+                    "report_url": report_url,
+                    "report_title": iteration_payload.get("report_title", ""),
                 },
             }, ensure_ascii=False) + "\n"
         except RuntimeError as exc:
@@ -715,6 +875,25 @@ def iteration_history(session_id: str, user: User = Depends(get_current_user)):
     history = store.get_iteration_history(user.user_id, session_id)
     last_proposal_id = store.get_last_proposal_id(user.user_id, session_id)
     return {"session_id": session_id, "iterations": history, "last_proposal_id": last_proposal_id}
+
+
+@app.get("/api/reports/iterations/{iteration_id}")
+def get_iteration_report(iteration_id: str, user: User = Depends(get_current_user)):
+    iteration = store.get_iteration(user.user_id, iteration_id)
+    if not iteration:
+        raise HTTPException(status_code=404, detail="iteration not found")
+    if (iteration.get("mode") or "") != "auto_analysis":
+        raise HTTPException(status_code=400, detail="iteration is not an auto-analysis report")
+    return {
+        "iteration_id": iteration.get("iteration_id"),
+        "session_id": iteration.get("session_id"),
+        "report_title": iteration.get("report_title", ""),
+        "final_report_html": iteration.get("final_report_html", ""),
+        "final_report_summary": iteration.get("final_report_summary", ""),
+        "final_report_chart_bindings": iteration.get("final_report_chart_bindings", []),
+        "report_meta": iteration.get("report_meta", {}),
+        "created_at": iteration.get("created_at"),
+    }
 
 
 @app.get("/api/chat/sessions")

@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Analysis Report</title>
+  <link rel="stylesheet" href="/web/styles.css" />
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/js/all.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
+  <style>
+    html, body { height: 100%; overflow-y: auto; }
+    body { margin: 0; background: #f8fafc; color: #0f172a; font-family: Inter, Arial, sans-serif; }
+    .report-shell { max-width: 1280px; margin: 0 auto; padding: 16px; }
+    .toolbar { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; }
+    .meta { font-size: 12px; color: #64748b; }
+    .actions { display: flex; gap: 8px; }
+    .frame-wrap { background: #fff; border: 1px solid #e2e8f0; border-radius: 12px; overflow: auto; min-height: 72vh; -webkit-overflow-scrolling: touch; touch-action: pan-y; }
+    #reportFrame { width: 100%; border: 0; min-height: 72vh; height: 80vh; background: #fff; display: block; overflow: auto; }
+    .loading { padding: 30px; text-align: center; color: #64748b; }
+    .error { padding: 20px; color: #dc2626; font-size: 14px; }
+    @media print {
+      .toolbar { display: none; }
+      .report-shell { max-width: none; margin: 0; padding: 0; }
+      .frame-wrap { border: none; border-radius: 0; }
+    }
+  </style>
+</head>
+<body>
+  <div class="report-shell">
+    <div class="toolbar">
+      <div></div>
+      <div class="actions">
+        <button id="btnBack" class="btn btn-outline btn-sm"><i class="fa-solid fa-arrow-left"></i> Back To Chat</button>
+        <button id="btnPrint" class="btn btn-primary btn-sm"><i class="fa-solid fa-file-pdf"></i> Export PDF</button>
+      </div>
+    </div>
+    <div class="frame-wrap">
+      <div id="loading" class="loading">Loading report...</div>
+      <div id="error" class="error" style="display:none;"></div>
+      <iframe id="reportFrame" sandbox="allow-same-origin allow-modals" style="display:none;"></iframe>
+    </div>
+  </div>
+  <script src="/web/report.js"></script>
+</body>
+</html>
