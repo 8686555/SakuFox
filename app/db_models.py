@@ -22,8 +22,22 @@ class DBSandbox(Base):
     uploads = Column(JSON)  # dict[str, list[dict]]
     upload_paths = Column(JSON)  # dict[str, str]
     db_config = Column(JSON)  # dict (optional external db config)
+    db_connection_id = Column(String(50), nullable=True)
     knowledge_bases = Column(JSON) # list[str], knowledge base IDs
     mounted_skills = Column(JSON)  # list[str], mounted skill IDs
+
+class DBDatabaseConnection(Base):
+    __tablename__ = "database_connections"
+    connection_id = Column(String(50), primary_key=True)
+    name = Column(String(255))
+    db_type = Column(String(50))
+    host = Column(String(255))
+    port = Column(Integer, nullable=True)
+    database = Column(String(500))
+    username = Column(String(255))
+    encrypted_password = Column(Text)
+    created_at = Column(String(50))
+    updated_at = Column(String(50))
 
 class DBKnowledgeBase(Base):
     __tablename__ = "knowledge_bases"

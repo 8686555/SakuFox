@@ -118,6 +118,42 @@ ALLOWED_BUILTINS = {
 }
 
 
+def _safe_first_row(frame: pd.DataFrame, default: dict | None = None) -> dict | None:
+    if not isinstance(frame, pd.DataFrame) or frame.empty:
+        return default
+    try:
+        return frame.iloc[0].to_dict()
+    except Exception:
+        return default
+
+
+def _safe_get_value(frame: pd.DataFrame, column: str, default=None, row_index: int = 0):
+    if not isinstance(frame, pd.DataFrame) or not column:
+        return default
+    if column not in frame.columns:
+        return default
+    if row_index < 0 or row_index >= len(frame):
+        return default
+    try:
+        return frame.iloc[row_index][column]
+    except Exception:
+        return default
+
+
+def _safe_has_columns(frame: pd.DataFrame, *columns: str) -> bool:
+    if not isinstance(frame, pd.DataFrame):
+        return False
+    return all(column in frame.columns for column in columns)
+
+
+def _normalize_python_result(frame: pd.DataFrame | list | None) -> tuple[list[dict], pd.DataFrame]:
+    if isinstance(frame, list):
+        frame = pd.DataFrame(frame)
+    if not isinstance(frame, pd.DataFrame):
+        frame = pd.DataFrame()
+    return frame.to_dict(orient="records"), frame
+
+
 def run_python_pipeline(
     python_code: str,
     shared_namespace: dict,
@@ -180,6 +216,9 @@ def run_python_pipeline(
             "uploaded_dataframes": uploads_df,
             "uploaded_file_paths": upload_paths,
             "execute_select_sql": sdk_execute_select_sql,
+            "safe_first_row": _safe_first_row,
+            "safe_get_value": _safe_get_value,
+            "safe_has_columns": _safe_has_columns,
             "chart_specs": [],
             "insight_hints": [],
             "final_df": pd.DataFrame(),
@@ -231,12 +270,34 @@ def run_python_pipeline(
         }
 
     except (KeyError, IndexError) as exc:
-        # Build helpful diagnostic message
+        # Build helpful diagnostic message and degrade gracefully instead of
+        # aborting the whole one-click analysis round.
         available_vars = sorted([k for k, v in shared_namespace.items() if not k.startswith("__")])
         df_cols = list(shared_namespace["df"].columns) if isinstance(shared_namespace.get("df"), pd.DataFrame) else []
-        
-        msg = t("error_python_access", exc=str(exc), vars=available_vars, cols=df_cols,
-                default=f"访问出错: {str(exc)}\n可用变量: {available_vars}\n当前 df 字段: {df_cols}")
-        raise RuntimeError(msg) from exc
+        msg = t(
+            "error_python_access",
+            exc=str(exc),
+            vars=available_vars,
+            cols=df_cols,
+            default=(
+                f"访问数据时出错: {str(exc)}\n"
+                f"可用变量: {available_vars}\n"
+                f"当前 df 字段: {df_cols}\n"
+                "建议先检查 DataFrame 是否为空，或使用 safe_first_row / safe_get_value / safe_has_columns。"
+            ),
+        )
+        fallback_source = shared_namespace.get("final_df")
+        if fallback_source is None or not isinstance(fallback_source, (pd.DataFrame, list)):
+            fallback_source = shared_namespace.get("df")
+        fallback_rows, _ = _normalize_python_result(fallback_source)
+        chart_specs = shared_namespace.get("chart_specs", [])
+        if not isinstance(chart_specs, list):
+            chart_specs = []
+        return {
+            "rows": fallback_rows,
+            "chart_specs": chart_specs,
+            "insight_hints": [str(x) for x in shared_namespace.get("insight_hints", []) if str(x).strip()],
+            "warning": msg,
+        }
     except Exception as exc:
         raise RuntimeError(t("error_python_exec", exc=str(exc), default=f"Python 执行出错: {str(exc)}")) from exc

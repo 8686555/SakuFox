@@ -5,6 +5,7 @@ import uuid
 from pathlib import Path
 
 import pandas as pd
+from pydantic import BaseModel
 from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -1121,13 +1122,8 @@ def skills(user: User = Depends(get_current_user)):
 # ── External DB connections ────────────────────────────────────────────
 
 
-class DbConnectionRequest(SaveSkillRequest.__class__):
-    pass
-
-
-from pydantic import BaseModel  # noqa: E402 (already imported at top-level; needed here for inline model)
-
-class RegisterDbRequest(BaseModel):
+class DbConnectionCreateRequest(BaseModel):
+    name: str
     db_type: str                  # mysql / postgresql / sqlite / oracle / impala
     host: str = "localhost"
     port: int | None = None
@@ -1136,21 +1132,39 @@ class RegisterDbRequest(BaseModel):
     password: str = ""
 
 
+class DbConnectionUpdateRequest(BaseModel):
+    name: str | None = None
+    db_type: str | None = None
+    host: str | None = None
+    port: int | None = None
+    database: str | None = None
+    username: str | None = None
+    password: str | None = None
+
+
+class DbConnectionTestRequest(BaseModel):
+    db_type: str
+    host: str = "localhost"
+    port: int | None = None
+    database: str
+    username: str = ""
+    password: str = ""
+
+
+class MountDbConnectionRequest(BaseModel):
+    connection_id: str | None = None
+
+
 class SaveTablesRequest(BaseModel):
     tables: list[str]
 
-@app.post("/api/sandboxes/{sandbox_id}/db-connection")
-def register_db_connection(
-    sandbox_id: str,
-    req: RegisterDbRequest,
-    user: User = Depends(get_current_user),
-):
-    """Register an external database connection to a sandbox."""
-    try:
-        sandbox = assert_sandbox_access(user, sandbox_id)
-    except (ValueError, PermissionError) as exc:
-        raise HTTPException(status_code=403, detail=str(exc))
+@app.get("/api/db-connections")
+def list_db_connections(user: User = Depends(get_current_user)):
+    return {"connections": store.list_db_connections()}
 
+
+@app.post("/api/db-connections/test")
+def test_standalone_db_connection(req: DbConnectionTestRequest, user: User = Depends(get_current_user)):
     try:
         cfg = DbConnectionConfig(
             db_type=req.db_type,
@@ -1160,26 +1174,133 @@ def register_db_connection(
             username=req.username,
             password=req.password,
         )
-        engine = get_engine(cfg)
+        result = test_connection(cfg)
+        tables = get_table_names(get_engine(cfg)) if result.get("ok") else []
+        return {"ok": bool(result.get("ok")), "error": result.get("error"), "tables": tables}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc), "tables": []}
+
+
+@app.post("/api/db-connections")
+def create_db_connection(req: DbConnectionCreateRequest, user: User = Depends(get_current_user)):
+    try:
+        cfg = DbConnectionConfig(
+            db_type=req.db_type,
+            host=req.host,
+            port=req.port,
+            database=req.database,
+            username=req.username,
+            password=req.password,
+        )
+        result = test_connection(cfg)
+        if not result.get("ok"):
+            raise HTTPException(status_code=400, detail=f"{t('error_db_config', default='连接配置错误')}: {result.get('error')}")
+
+        connection = store.create_or_reuse_db_connection(
+            {
+                "name": req.name,
+                "db_type": req.db_type,
+                "host": req.host,
+                "port": req.port or cfg.port,
+                "database": req.database,
+                "username": req.username,
+                "password": req.password,
+            }
+        )
+        tables = get_table_names(get_engine(cfg))
+        return {"connection": connection, "tables": tables}
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"{t('error_db_config', default='连接配置错误')}: {str(exc)}")
 
-    db_config = {
-        "db_type": req.db_type,
-        "host": req.host,
-        "port": req.port or cfg.port,
-        "database": req.database,
-        "username": req.username,
-    }
-    
-    table_names = []
-    try:
-        table_names = get_table_names(engine)
-    except Exception as exc:
-        pass # If we fail to get tables for some reason, just return empty list
 
-    store.register_sandbox_db(sandbox_id, engine, db_config)
-    return {"sandbox_id": sandbox_id, "db_config": db_config, "tables": table_names, "message": t("msg_db_registered", default="数据库连接已注册，下次迭代将自动使用外部数据库")}
+@app.put("/api/db-connections/{connection_id}")
+def update_db_connection(connection_id: str, req: DbConnectionUpdateRequest, user: User = Depends(get_current_user)):
+    current = store.get_db_connection(connection_id, include_password=True)
+    if not current:
+        raise HTTPException(status_code=404, detail=t("error_db_connection_not_found", default="Database connection not found"))
+
+    merged = {
+        "name": req.name if req.name is not None else current["name"],
+        "db_type": req.db_type if req.db_type is not None else current["db_type"],
+        "host": req.host if req.host is not None else current["host"],
+        "port": req.port if req.port is not None else current["port"],
+        "database": req.database if req.database is not None else current["database"],
+        "username": req.username if req.username is not None else current["username"],
+        "password": req.password if req.password not in (None, "") else current.get("password", ""),
+    }
+    try:
+        cfg = DbConnectionConfig(
+            db_type=merged["db_type"],
+            host=merged["host"],
+            port=merged["port"],
+            database=merged["database"],
+            username=merged["username"],
+            password=merged["password"],
+        )
+        result = test_connection(cfg)
+        if not result.get("ok"):
+            raise HTTPException(status_code=400, detail=f"{t('error_db_config', default='连接配置错误')}: {result.get('error')}")
+
+        updates = {
+            "name": merged["name"],
+            "db_type": merged["db_type"],
+            "host": merged["host"],
+            "port": merged["port"] or cfg.port,
+            "database": merged["database"],
+            "username": merged["username"],
+        }
+        if req.password not in (None, ""):
+            updates["password"] = req.password
+        connection = store.update_db_connection(connection_id, updates)
+        tables = get_table_names(get_engine(cfg))
+        return {"connection": connection, "tables": tables}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"{t('error_db_config', default='连接配置错误')}: {str(exc)}")
+
+
+@app.delete("/api/db-connections/{connection_id}")
+def delete_db_connection(connection_id: str, user: User = Depends(get_current_user)):
+    ok = store.delete_db_connection(connection_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail=t("error_db_connection_not_found", default="Database connection not found"))
+    return {"ok": True}
+
+
+@app.put("/api/sandboxes/{sandbox_id}/db-connection")
+def mount_db_connection(
+    sandbox_id: str,
+    req: MountDbConnectionRequest,
+    user: User = Depends(get_current_user),
+):
+    try:
+        assert_sandbox_access(user, sandbox_id)
+    except (ValueError, PermissionError) as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
+
+    if req.connection_id is None:
+        sandbox = store.mount_db_connection_to_sandbox(sandbox_id=sandbox_id, connection_id=None, clear_tables=True)
+        return {"sandbox_id": sandbox_id, "db_connection_id": None, "db_connection": None, "tables": [], "sandbox": sandbox}
+
+    if not store.get_db_connection(req.connection_id):
+        raise HTTPException(status_code=404, detail=t("error_db_connection_not_found", default="Database connection not found"))
+
+    sandbox = store.mount_db_connection_to_sandbox(sandbox_id=sandbox_id, connection_id=req.connection_id, clear_tables=True)
+    table_names: list[str] = []
+    try:
+        table_names = store.get_connection_table_names(req.connection_id)
+    except Exception:
+        table_names = []
+    return {
+        "sandbox_id": sandbox_id,
+        "db_connection_id": req.connection_id,
+        "db_connection": store.get_db_connection(req.connection_id),
+        "tables": table_names,
+        "sandbox": sandbox,
+    }
 
 
 @app.post("/api/sandboxes/{sandbox_id}/db-tables")
@@ -1204,32 +1325,6 @@ def save_sandbox_tables(
     })
     
     return {"ok": True, "tables": req.tables}
-
-
-@app.post("/api/sandboxes/{sandbox_id}/db-test")
-def test_db_connection(
-    sandbox_id: str,
-    req: RegisterDbRequest,
-    user: User = Depends(get_current_user),
-):
-    """Test an external database connection without registering it."""
-    try:
-        assert_sandbox_access(user, sandbox_id)
-    except (ValueError, PermissionError) as exc:
-        raise HTTPException(status_code=403, detail=str(exc))
-    try:
-        cfg = DbConnectionConfig(
-            db_type=req.db_type,
-            host=req.host,
-            port=req.port,
-            database=req.database,
-            username=req.username,
-            password=req.password,
-        )
-        result = test_connection(cfg)
-    except Exception as exc:
-        return {"ok": False, "error": str(exc)}
-    return result
 
 
 # ── Internal helpers ──────────────────────────────────────────────────
@@ -1314,8 +1409,12 @@ def _auto_execute(result_data: dict, allowed_tables: list[str], upload_rows: dic
                 )
                 result_rows = python_result["rows"]
                 result_charts = python_result.get("chart_specs", [])
-                
-                step_results.append({"rows": result_rows, "tables": all_tables, "chart_specs": result_charts})
+                result_warning = python_result.get("warning")
+
+                step_entry = {"rows": result_rows, "tables": all_tables, "chart_specs": result_charts}
+                if result_warning:
+                    step_entry["warning"] = result_warning
+                step_results.append(step_entry)
                 all_rows = result_rows
                 all_chart_specs.extend(result_charts)
             except Exception as exc:

@@ -10,6 +10,10 @@ import json
 
 import math
 
+import base64
+
+import hashlib
+
 from dataclasses import dataclass
 
 from datetime import datetime, timezone
@@ -24,11 +28,25 @@ from sqlalchemy import create_engine, select, delete, update
 
 from sqlalchemy.orm import sessionmaker, Session as SQLASession
 
+from cryptography.fernet import Fernet, InvalidToken
+
 
 
 from app.config import load_config
 
-from app.db_models import Base, DBUser, DBSandbox, DBSession, DBIteration, DBSkill, DBProposal, DBKnowledgeBase
+from app.db_connections import DbConnectionConfig, get_engine, get_table_names
+
+from app.db_models import (
+    Base,
+    DBUser,
+    DBSandbox,
+    DBSession,
+    DBIteration,
+    DBSkill,
+    DBProposal,
+    DBKnowledgeBase,
+    DBDatabaseConnection,
+)
 
 from app.i18n import t
 
@@ -56,11 +74,13 @@ class DatabaseStore:
 
         self._lock = threading.Lock()
 
-        config = load_config()
+        self._config = load_config()
 
-        self.engine = create_engine(config.db_url, pool_pre_ping=True)
+        self.engine = create_engine(self._config.db_url, pool_pre_ping=True)
 
         self.SessionFactory = sessionmaker(bind=self.engine)
+
+        self._fernet = self._build_fernet(self._config.db_connection_secret_key)
 
         
 
@@ -100,9 +120,8 @@ class DatabaseStore:
 
 
 
-        # Keep the internal SQLite connection for the "sandbox demo" data
-
-        self.db_engines: dict[str, object] = {}  # sandbox_id -> SQLAlchemy Engine
+        # Keep runtime SQLAlchemy engines in-memory (non-serializable)
+        self.db_engines: dict[str, object] = {}  # connection_id -> SQLAlchemy Engine
 
         
 
@@ -121,6 +140,106 @@ class DatabaseStore:
         self._seed_sandbox_data()
 
         self._init_default_sandbox()
+
+
+    def _build_fernet(self, secret_key: str) -> Fernet:
+
+        key_text = str(secret_key or "").strip()
+
+        if not key_text:
+
+            key_text = "default-db-connection-secret-key"
+
+        key_bytes = key_text.encode("utf-8")
+
+        try:
+
+            return Fernet(key_bytes)
+
+        except Exception:
+
+            digest = hashlib.sha256(key_bytes).digest()
+
+            fernet_key = base64.urlsafe_b64encode(digest)
+
+            return Fernet(fernet_key)
+
+
+    def _encrypt_password(self, password: str) -> str:
+
+        plain = str(password or "").encode("utf-8")
+
+        return self._fernet.encrypt(plain).decode("utf-8")
+
+
+    def _decrypt_password(self, encrypted_password: str) -> str:
+
+        if not encrypted_password:
+
+            return ""
+
+        try:
+
+            return self._fernet.decrypt(encrypted_password.encode("utf-8")).decode("utf-8")
+
+        except InvalidToken:
+
+            return ""
+
+
+    def _db_connection_signature(self, payload: dict[str, Any]) -> tuple[str, str, int | None, str, str]:
+
+        return (
+            str(payload.get("db_type") or "").strip().lower(),
+            str(payload.get("host") or "").strip().lower(),
+            payload.get("port"),
+            str(payload.get("database") or "").strip(),
+            str(payload.get("username") or "").strip(),
+        )
+
+
+    def _build_connection_name(self, payload: dict[str, Any]) -> str:
+
+        db_type = str(payload.get("db_type") or "").strip().lower() or "db"
+
+        database = str(payload.get("database") or "").strip() or "unknown"
+
+        host = str(payload.get("host") or "").strip()
+
+        if db_type == "sqlite":
+
+            return f"sqlite:{database}"
+
+        return f"{db_type}:{host}/{database}" if host else f"{db_type}:{database}"
+
+
+    def _serialize_db_connection(self, conn: DBDatabaseConnection) -> dict[str, Any]:
+
+        return self._sanitize_json(
+            {
+                "connection_id": conn.connection_id,
+                "name": conn.name,
+                "db_type": conn.db_type,
+                "host": conn.host,
+                "port": conn.port,
+                "database": conn.database,
+                "username": conn.username,
+                "created_at": conn.created_at,
+                "updated_at": conn.updated_at,
+            }
+        )
+
+
+    def _build_db_config_for_runtime(self, payload: dict[str, Any], password: str) -> DbConnectionConfig:
+
+        return DbConnectionConfig(
+            db_type=str(payload.get("db_type") or "").strip(),
+            host=str(payload.get("host") or "").strip() or "localhost",
+            port=payload.get("port"),
+            database=str(payload.get("database") or "").strip(),
+            username=str(payload.get("username") or "").strip(),
+            password=password,
+        )
 
 
 
@@ -143,6 +262,16 @@ class DatabaseStore:
             with self.engine.begin() as conn:
 
                 conn.execute(text("ALTER TABLE sandboxes ADD COLUMN mounted_skills JSON"))
+
+        except Exception:
+
+            pass # Already exists
+
+        try:
+
+            with self.engine.begin() as conn:
+
+                conn.execute(text("ALTER TABLE sandboxes ADD COLUMN db_connection_id VARCHAR(50)"))
 
         except Exception:
 
@@ -185,6 +314,110 @@ class DatabaseStore:
                     conn.execute(text(stmt))
             except Exception:
                 pass # Already exists
+
+        self._migrate_legacy_sandbox_db_configs()
+
+
+    def _migrate_legacy_sandbox_db_configs(self) -> None:
+
+        with self.SessionFactory() as sess:
+
+            sandboxes = sess.execute(select(DBSandbox)).scalars().all()
+
+            signature_to_connection_id: dict[tuple[str, str, int | None, str, str], str] = {}
+
+            existing = sess.execute(select(DBDatabaseConnection)).scalars().all()
+
+            for item in existing:
+
+                signature = self._db_connection_signature(
+                    {
+                        "db_type": item.db_type,
+                        "host": item.host,
+                        "port": item.port,
+                        "database": item.database,
+                        "username": item.username,
+                    }
+                )
+
+                signature_to_connection_id[signature] = item.connection_id
+
+            changed = False
+
+            for sb in sandboxes:
+
+                if sb.db_connection_id:
+
+                    continue
+
+                legacy = sb.db_config or {}
+
+                if not legacy:
+
+                    continue
+
+                payload = {
+                    "name": self._build_connection_name(legacy),
+                    "db_type": str(legacy.get("db_type") or "").strip(),
+                    "host": str(legacy.get("host") or "localhost").strip() or "localhost",
+                    "port": legacy.get("port"),
+                    "database": str(legacy.get("database") or "").strip(),
+                    "username": str(legacy.get("username") or "").strip(),
+                    "password": "",
+                }
+
+                if not payload["db_type"] or not payload["database"]:
+
+                    continue
+
+                runtime_engine = self.db_engines.get(sb.sandbox_id)
+
+                if runtime_engine is not None:
+
+                    try:
+
+                        payload["password"] = str(runtime_engine.url.password or "")
+
+                    except Exception:
+
+                        payload["password"] = ""
+
+                signature = self._db_connection_signature(payload)
+
+                connection_id = signature_to_connection_id.get(signature)
+
+                if connection_id is None:
+
+                    now = datetime.now(timezone.utc).isoformat()
+
+                    connection_id = f"dbc_{uuid.uuid4().hex[:12]}"
+
+                    encrypted_password = self._encrypt_password(payload["password"])
+
+                    record = DBDatabaseConnection(
+                        connection_id=connection_id,
+                        name=payload["name"],
+                        db_type=payload["db_type"],
+                        host=payload["host"],
+                        port=payload["port"],
+                        database=payload["database"],
+                        username=payload["username"],
+                        encrypted_password=encrypted_password,
+                        created_at=now,
+                        updated_at=now,
+                    )
+
+                    sess.add(record)
+
+                    signature_to_connection_id[signature] = connection_id
+
+                sb.db_connection_id = connection_id
+
+                changed = True
+
+            if changed:
+
+                sess.commit()
 
 
 
@@ -328,6 +561,8 @@ class DatabaseStore:
 
                     upload_paths={},
 
+                    db_connection_id=None,
+
                     knowledge_bases=[],
 
                     mounted_skills=[]
@@ -362,17 +597,23 @@ class DatabaseStore:
 
         if using_prebuilt:
 
-            engine = create_engine(f"sqlite:///{demo_db_path}", pool_pre_ping=True)
+            connection = self.create_or_reuse_db_connection(
+                {
+                    "name": "sqlite:superset_demo",
+                    "db_type": "sqlite",
+                    "host": "localhost",
+                    "port": None,
+                    "database": str(demo_db_path),
+                    "username": "",
+                    "password": "",
+                }
+            )
 
-            db_config = {
-
-                "db_type": "sqlite",
-
-                "database": str(demo_db_path)
-
-            }
-
-            self.register_sandbox_db("sb_flights_overview", engine, db_config)
+            self.mount_db_connection_to_sandbox(
+                sandbox_id="sb_flights_overview",
+                connection_id=connection["connection_id"],
+                clear_tables=False,
+            )
 
 
 
@@ -1097,27 +1338,311 @@ class DatabaseStore:
 
 
 
-    def register_sandbox_db(self, sandbox_id: str, engine: object, db_config: dict) -> None:
+    def create_or_reuse_db_connection(self, payload: dict[str, Any]) -> dict[str, Any]:
 
-        with self._lock:
+        data = {
+            "name": str(payload.get("name") or "").strip(),
+            "db_type": str(payload.get("db_type") or "").strip().lower(),
+            "host": str(payload.get("host") or "localhost").strip() or "localhost",
+            "port": payload.get("port"),
+            "database": str(payload.get("database") or "").strip(),
+            "username": str(payload.get("username") or "").strip(),
+            "password": str(payload.get("password") or ""),
+        }
 
-            self.db_engines[sandbox_id] = engine # Keep engine in memory (non-serializable)
+        if not data["name"]:
+
+            data["name"] = self._build_connection_name(data)
+
+        signature = self._db_connection_signature(data)
+
+        with self.SessionFactory() as sess:
+
+            existing = sess.execute(select(DBDatabaseConnection)).scalars().all()
+
+            for row in existing:
+
+                existing_signature = self._db_connection_signature(
+                    {
+                        "db_type": row.db_type,
+                        "host": row.host,
+                        "port": row.port,
+                        "database": row.database,
+                        "username": row.username,
+                    }
+                )
+
+                if existing_signature == signature:
+
+                    if data["password"]:
+
+                        row.encrypted_password = self._encrypt_password(data["password"])
+
+                        row.name = data["name"] or row.name
+
+                        row.updated_at = datetime.now(timezone.utc).isoformat()
+
+                        sess.commit()
+
+                    return self._serialize_db_connection(row)
+
+            now = datetime.now(timezone.utc).isoformat()
+
+            connection = DBDatabaseConnection(
+                connection_id=f"dbc_{uuid.uuid4().hex[:12]}",
+                name=data["name"],
+                db_type=data["db_type"],
+                host=data["host"],
+                port=data["port"],
+                database=data["database"],
+                username=data["username"],
+                encrypted_password=self._encrypt_password(data["password"]),
+                created_at=now,
+                updated_at=now,
+            )
+
+            sess.add(connection)
+
+            sess.commit()
+
+            return self._serialize_db_connection(connection)
+
+
+    def list_db_connections(self) -> list[dict[str, Any]]:
+
+        with self.SessionFactory() as sess:
+
+            rows = sess.execute(select(DBDatabaseConnection).order_by(DBDatabaseConnection.created_at.desc())).scalars().all()
+
+            return [self._serialize_db_connection(row) for row in rows]
+
+
+    def get_db_connection(self, connection_id: str, include_password: bool = False) -> dict[str, Any] | None:
+
+        with self.SessionFactory() as sess:
+
+            row = sess.get(DBDatabaseConnection, connection_id)
+
+            if not row:
+
+                return None
+
+            data = self._serialize_db_connection(row)
+
+            if include_password:
+
+                data["password"] = self._decrypt_password(row.encrypted_password)
+
+            return data
+
+
+    def update_db_connection(self, connection_id: str, updates: dict[str, Any]) -> dict[str, Any]:
+
+        with self.SessionFactory() as sess:
+
+            row = sess.get(DBDatabaseConnection, connection_id)
+
+            if not row:
+
+                raise ValueError("Database connection not found")
+
+            if "name" in updates and updates["name"] is not None:
+
+                row.name = str(updates["name"]).strip() or row.name
+
+            if "db_type" in updates and updates["db_type"] is not None:
+
+                row.db_type = str(updates["db_type"]).strip().lower()
+
+            if "host" in updates and updates["host"] is not None:
+
+                row.host = str(updates["host"]).strip() or "localhost"
+
+            if "port" in updates:
+
+                row.port = updates.get("port")
+
+            if "database" in updates and updates["database"] is not None:
+
+                row.database = str(updates["database"]).strip()
+
+            if "username" in updates and updates["username"] is not None:
+
+                row.username = str(updates["username"]).strip()
+
+            if "password" in updates and str(updates.get("password") or "") != "":
+
+                row.encrypted_password = self._encrypt_password(str(updates["password"]))
+
+            row.updated_at = datetime.now(timezone.utc).isoformat()
+
+            sess.commit()
+
+            with self._lock:
+
+                if connection_id in self.db_engines:
+
+                    del self.db_engines[connection_id]
+
+            return self._serialize_db_connection(row)
+
+
+    def delete_db_connection(self, connection_id: str) -> bool:
+
+        with self.SessionFactory() as sess:
+
+            for sandbox in sess.execute(select(DBSandbox).where(DBSandbox.db_connection_id == connection_id)).scalars().all():
+
+                sandbox.db_connection_id = None
+
+                sandbox.tables = []
+                sandbox.db_config = {}
+
+            result = sess.execute(delete(DBDatabaseConnection).where(DBDatabaseConnection.connection_id == connection_id))
+
+            sess.commit()
+
+            with self._lock:
+
+                if connection_id in self.db_engines:
+
+                    del self.db_engines[connection_id]
+
+            return result.rowcount > 0
+
+
+    def mount_db_connection_to_sandbox(self, sandbox_id: str, connection_id: str | None, clear_tables: bool = True) -> dict[str, Any]:
 
         with self.SessionFactory() as sess:
 
             sb = sess.get(DBSandbox, sandbox_id)
 
-            if sb:
+            if not sb:
 
-                sb.db_config = db_config
+                raise ValueError("Sandbox not found")
 
-                sess.commit()
+            if connection_id:
 
+                conn = sess.get(DBDatabaseConnection, connection_id)
+
+                if not conn:
+
+                    raise ValueError("Database connection not found")
+
+            sb.db_connection_id = connection_id
+
+            if clear_tables:
+
+                sb.tables = []
+
+            if connection_id is None:
+
+                sb.db_config = {}
+
+            sess.commit()
+
+        if connection_id:
+
+            connection = self.get_db_connection(connection_id)
+
+            if connection:
+
+                legacy = {
+                    "db_type": connection["db_type"],
+                    "host": connection["host"],
+                    "port": connection["port"],
+                    "database": connection["database"],
+                    "username": connection["username"],
+                }
+
+                self.update_sandbox(sandbox_id, {"db_config": legacy})
+        else:
+
+            self.update_sandbox(sandbox_id, {"db_config": {}})
+
+        return self.get_sandbox(sandbox_id)
+
+
+    def get_engine_for_connection(self, connection_id: str) -> object | None:
+
+        if not connection_id:
+
+            return None
+
+        with self._lock:
+
+            cached = self.db_engines.get(connection_id)
+
+        if cached is not None:
+
+            return cached
+
+        data = self.get_db_connection(connection_id, include_password=True)
+
+        if not data:
+
+            return None
+
+        cfg = self._build_db_config_for_runtime(data, data.get("password", ""))
+
+        engine = get_engine(cfg)
+
+        with self._lock:
+
+            self.db_engines[connection_id] = engine
+
+        return engine
 
 
     def get_sandbox_engine(self, sandbox_id: str) -> object | None:
 
-        return self.db_engines.get(sandbox_id)
+        with self.SessionFactory() as sess:
+
+            sb = sess.get(DBSandbox, sandbox_id)
+
+            if not sb:
+
+                return None
+
+            if sb.db_connection_id:
+
+                return self.get_engine_for_connection(sb.db_connection_id)
+
+            # Backward compatibility: legacy sandbox-scoped db_config.
+            legacy = sb.db_config or {}
+
+            if not legacy:
+
+                return None
+
+            runtime = self.db_engines.get(sandbox_id)
+
+            password = ""
+
+            if runtime is not None:
+
+                try:
+
+                    password = str(runtime.url.password or "")
+
+                except Exception:
+
+                    password = ""
+
+            cfg = self._build_db_config_for_runtime(legacy, password)
+
+            return get_engine(cfg)
+
+
+    def get_connection_table_names(self, connection_id: str) -> list[str]:
+
+        engine = self.get_engine_for_connection(connection_id)
+
+        if engine is None:
+
+            return []
+
+        return get_table_names(engine)
 
 
 
@@ -1315,6 +1840,8 @@ class DatabaseStore:
 
                 upload_paths={},
 
+                db_connection_id=None,
+
                 knowledge_bases=[],
 
                 mounted_skills=[]
@@ -1337,6 +1864,14 @@ class DatabaseStore:
 
             if sb:
 
+                db_connection_summary = None
+
+                if sb.db_connection_id:
+
+                    db_connection_summary = self.get_db_connection(sb.db_connection_id)
+
+                legacy_db_connection = sb.db_config or None
+
                 return self._sanitize_json({
 
                     "sandbox_id": sb.sandbox_id,
@@ -1353,7 +1888,9 @@ class DatabaseStore:
 
                     "upload_paths": sb.upload_paths or {},
 
-                    "db_connection": sb.db_config,
+                    "db_connection_id": sb.db_connection_id,
+
+                    "db_connection": db_connection_summary or legacy_db_connection,
 
                     "knowledge_bases": sb.knowledge_bases or [],
 
@@ -1396,12 +1933,6 @@ class DatabaseStore:
             sess.commit()
 
             if result.rowcount > 0:
-
-                with self._lock:
-
-                    if sandbox_id in self.db_engines:
-
-                        del self.db_engines[sandbox_id]
 
                 return True
 

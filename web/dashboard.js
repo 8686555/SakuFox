@@ -1,8 +1,11 @@
-﻿let sessionId = "";
+let sessionId = "";
 
 let lastProposalId = "";
 
 let sandboxesData = [];
+let dbConnectionsData = [];
+let currentDbMountTableNames = [];
+let currentDbMountTableFilter = "";
 
 let uploadedFiles = [];
 
@@ -226,6 +229,7 @@ async function refreshProfile(selectId = null) {
     await refreshSkills();
 
     updateMountedSkillSummary();
+    updateMountedDbSummary();
   } catch (e) {
 
     console.error(i18n.t("load_config_failed") || "加载配置失败", e);
@@ -419,6 +423,7 @@ sandboxSelect.addEventListener('change', () => {
   refreshSkills();
 
   updateMountedSkillSummary();
+  updateMountedDbSummary();
 });
 
 
@@ -450,6 +455,22 @@ function updateMountedSkillSummary() {
 
   summary.textContent = i18n.t("mounted_skill_count", { count }) || `当前沙盒已挂载 ${count} 条经验`;
 
+}
+
+function updateMountedDbSummary() {
+  const summary = document.getElementById("mountedDbSummary");
+  if (!summary) return;
+  const currentSandbox = getCurrentSandbox();
+  if (!currentSandbox) {
+    summary.textContent = i18n.t("select_sandbox_first") || "请先选择沙盒";
+    return;
+  }
+  if (!currentSandbox.db_connection) {
+    summary.textContent = i18n.t("db_not_mounted") || "当前沙盒未挂载数据库连接";
+    return;
+  }
+  const conn = currentSandbox.db_connection;
+  summary.textContent = i18n.t("db_mounted_summary", { name: conn.name }) || `当前挂载: ${conn.name}`;
 }
 
 
@@ -2500,412 +2521,398 @@ if (saveSkillMountBtn) {
 
 
 const dbModal = document.getElementById("dbModal");
+const dbMountModal = document.getElementById("dbMountModal");
 const openDbModalBtn = document.getElementById("openDbModalBtn");
-
 const closeDbModalBtn = document.getElementById("closeDbModalBtn");
+const openDbMountModalBtn = document.getElementById("openDbMountModalBtn");
+const closeDbMountModalBtn = document.getElementById("closeDbMountModalBtn");
 
-
-
-openDbModalBtn.onclick = () => {
-
-  dbModal.style.display = "flex";
-
-};
-
-
-
-closeDbModalBtn.onclick = () => {
-
-  dbModal.style.display = "none";
-
-};
-
-
-
-// Close modal when clicking outside
-
-window.onclick = (event) => {
-
-  if (event.target === dbModal) {
-
-    dbModal.style.display = "none";
-
-  }
-
-  if (event.target === uploadModal) {
-
-    uploadModal.style.display = "none";
-
-  }
-
-  if (event.target === skillModal) {
-
-    skillModal.style.display = "none";
-
-    cancelSkillEdit();
-
-  }
-  if (event.target === skillMountModal) {
-
-    closeSkillMountModal();
-
-  }
-};
-
-
-
+let currentDbConnectionId = "";
 
 function getDbFormData() {
   return {
-
+    name: document.getElementById("dbConnNameInput").value.trim(),
     db_type: document.getElementById("dbTypeInput").value,
-
     host: document.getElementById("dbHostInput").value.trim() || "localhost",
-
-    port: parseInt(document.getElementById("dbPortInput").value) || null,
-
+    port: document.getElementById("dbPortInput").value.trim() ? parseInt(document.getElementById("dbPortInput").value, 10) : null,
     database: document.getElementById("dbNameInput").value.trim(),
-
     username: document.getElementById("dbUserInput").value.trim(),
-
     password: document.getElementById("dbPassInput").value
-
   };
-
 }
 
+function setDbMessage(message, color = "inherit") {
+  const el = document.getElementById("dbMsg");
+  if (el) el.innerHTML = message ? `<span style="color:${color}">${message}</span>` : "";
+}
 
+function setDbMountMessage(message, color = "inherit") {
+  const el = document.getElementById("dbMountMsg");
+  if (el) el.innerHTML = message ? `<span style="color:${color}">${message}</span>` : "";
+}
+
+function toggleDbTypeFields() {
+  const isSqlite = document.getElementById("dbTypeInput").value === "sqlite";
+  document.getElementById("dbHostInput").style.display = isSqlite ? "none" : "";
+  document.getElementById("dbPortInput").style.display = isSqlite ? "none" : "";
+  document.getElementById("dbUserInput").style.display = isSqlite ? "none" : "";
+  document.getElementById("dbPassInput").style.display = isSqlite ? "none" : "";
+  document.getElementById("dbNameInput").placeholder = isSqlite ? (i18n.t("sqlite_path_placeholder") || "SQLite DB Absolute Path (Required)") : "DB Name";
+}
+
+function clearDbForm() {
+  currentDbConnectionId = "";
+  document.getElementById("dbConnectionSelect").value = "";
+  document.getElementById("dbConnNameInput").value = "";
+  document.getElementById("dbTypeInput").value = "sqlite";
+  document.getElementById("dbHostInput").value = "localhost";
+  document.getElementById("dbPortInput").value = "";
+  document.getElementById("dbNameInput").value = "";
+  document.getElementById("dbUserInput").value = "";
+  document.getElementById("dbPassInput").value = "";
+  document.getElementById("dbPassInput").placeholder = i18n.t("password_retain_hint") || "密码(留空表示保持原值)";
+  toggleDbTypeFields();
+}
+
+function fillDbForm(connection) {
+  if (!connection) {
+    clearDbForm();
+    return;
+  }
+  currentDbConnectionId = connection.connection_id || "";
+  document.getElementById("dbConnectionSelect").value = currentDbConnectionId;
+  document.getElementById("dbConnNameInput").value = connection.name || "";
+  document.getElementById("dbTypeInput").value = connection.db_type || "sqlite";
+  document.getElementById("dbHostInput").value = connection.host || "localhost";
+  document.getElementById("dbPortInput").value = connection.port ?? "";
+  document.getElementById("dbNameInput").value = connection.database || "";
+  document.getElementById("dbUserInput").value = connection.username || "";
+  document.getElementById("dbPassInput").value = "";
+  document.getElementById("dbPassInput").placeholder = i18n.t("password_retain_hint") || "密码(留空表示保持原值)";
+  toggleDbTypeFields();
+}
+
+function renderDbConnectionSelects(selectedId = "") {
+  const connSelect = document.getElementById("dbConnectionSelect");
+  const mountSelect = document.getElementById("dbMountConnectionSelect");
+  const options = ['<option value="">--</option>']
+    .concat((dbConnectionsData || []).map((conn) => `<option value="${conn.connection_id}">${escapeHtml(conn.name || conn.connection_id)} (${escapeHtml(conn.db_type || "")})</option>`))
+    .join("");
+  if (connSelect) {
+    connSelect.innerHTML = options;
+    connSelect.value = selectedId || "";
+  }
+  if (mountSelect) {
+    mountSelect.innerHTML = options;
+    const currentSandbox = getCurrentSandbox();
+    mountSelect.value = currentSandbox?.db_connection_id || selectedId || "";
+  }
+}
+
+async function loadDbConnections(selectedId = "") {
+  const res = await api("/api/db-connections");
+  dbConnectionsData = res.connections || [];
+  renderDbConnectionSelects(selectedId);
+  if (selectedId) {
+    fillDbForm(dbConnectionsData.find((conn) => conn.connection_id === selectedId) || null);
+  } else if (!currentDbConnectionId) {
+    clearDbForm();
+  }
+  return dbConnectionsData;
+}
+
+function renderDbMountTables(tableNames) {
+  currentDbMountTableNames = Array.isArray(tableNames) ? tableNames.slice() : [];
+  const container = document.getElementById("dbMountTablesContainer");
+  const list = document.getElementById("dbMountTablesList");
+  const searchInput = document.getElementById("dbMountTableSearchInput");
+  if (!container || !list) return;
+  const selectedTables = new Set(Array.from(list.querySelectorAll(".db-table-checkbox:checked")).map((cb) => cb.value));
+  const filterText = (currentDbMountTableFilter || "").trim().toLowerCase();
+  const filteredTables = currentDbMountTableNames.filter((table) => !filterText || String(table).toLowerCase().includes(filterText));
+  list.innerHTML = "";
+  if (searchInput) {
+    searchInput.style.display = currentDbMountTableNames.length > 0 ? "" : "none";
+  }
+  if (!currentDbMountTableNames || currentDbMountTableNames.length === 0) {
+    container.style.display = "none";
+    return;
+  }
+  if (filteredTables.length === 0) {
+    list.innerHTML = `<div style="font-size: 13px; color: var(--text-muted); padding: 4px 2px;">${i18n.t("db_mount_search_empty") || "没有匹配的表名"}</div>`;
+    container.style.display = "block";
+    return;
+  }
+  filteredTables.forEach((table) => {
+    const div = document.createElement("div");
+    div.style.marginBottom = "8px";
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.value = table;
+    cb.id = `chk_mount_${table}`;
+    cb.style.marginRight = "8px";
+    cb.className = "db-table-checkbox";
+    cb.checked = selectedTables.has(table);
+    cb.onchange = () => {
+      const checkedCount = document.querySelectorAll(".db-table-checkbox:checked").length;
+      if (checkedCount > MAX_SELECTED_TABLES) {
+        cb.checked = false;
+        alert(i18n.t("max_5_tables") || `Max ${MAX_SELECTED_TABLES} tables allowed`);
+      }
+    };
+    const label = document.createElement("label");
+    label.htmlFor = cb.id;
+    label.textContent = table;
+    label.style.cursor = "pointer";
+    div.appendChild(cb);
+    div.appendChild(label);
+    list.appendChild(div);
+  });
+  container.style.display = "block";
+}
+
+function resetDbMountTables() {
+  const container = document.getElementById("dbMountTablesContainer");
+  const list = document.getElementById("dbMountTablesList");
+  const searchInput = document.getElementById("dbMountTableSearchInput");
+  if (container) container.style.display = "none";
+  if (list) list.innerHTML = "";
+  if (searchInput) searchInput.value = "";
+  currentDbMountTableNames = [];
+  currentDbMountTableFilter = "";
+}
+
+async function refreshDbMountTarget() {
+  const target = document.getElementById("dbMountTarget");
+  if (!target) return;
+  const currentSandbox = getCurrentSandbox();
+  if (!currentSandbox) {
+    target.textContent = i18n.t("select_sandbox_first") || "请先选择沙盒";
+    return;
+  }
+  target.textContent = `${i18n.t("current_sandbox_label") || "当前工作空间"}: ${currentSandbox.name}`;
+}
+
+openDbModalBtn.onclick = async () => {
+  dbModal.style.display = "flex";
+  await loadDbConnections();
+  clearDbForm();
+  setDbMessage("");
+};
+
+closeDbModalBtn.onclick = () => {
+  dbModal.style.display = "none";
+};
+
+openDbMountModalBtn.onclick = async () => {
+  const currentSandbox = getCurrentSandbox();
+  if (!currentSandbox) {
+    alert(i18n.t("select_sandbox_first") || "Please select a sandbox first");
+    return;
+  }
+  dbMountModal.style.display = "flex";
+  await loadDbConnections("");
+  await refreshDbMountTarget();
+  setDbMountMessage("");
+  if (currentSandbox.db_connection_id) {
+    document.getElementById("dbMountConnectionSelect").value = currentSandbox.db_connection_id;
+  }
+  resetDbMountTables();
+};
+
+closeDbMountModalBtn.onclick = () => {
+  dbMountModal.style.display = "none";
+};
+
+window.onclick = (event) => {
+  if (event.target === dbModal) {
+    dbModal.style.display = "none";
+  }
+  if (event.target === dbMountModal) {
+    dbMountModal.style.display = "none";
+  }
+  if (event.target === uploadModal) {
+    uploadModal.style.display = "none";
+  }
+  if (event.target === skillModal) {
+    skillModal.style.display = "none";
+    cancelSkillEdit();
+  }
+  if (event.target === skillMountModal) {
+    closeSkillMountModal();
+  }
+};
+
+document.getElementById("dbConnectionSelect").onchange = (event) => {
+  currentDbConnectionId = event.target.value || "";
+  if (!currentDbConnectionId) {
+    clearDbForm();
+    return;
+  }
+  fillDbForm(dbConnectionsData.find((item) => item.connection_id === currentDbConnectionId) || null);
+};
+
+document.getElementById("dbMountConnectionSelect").onchange = () => {
+  resetDbMountTables();
+};
+
+document.getElementById("dbMountTableSearchInput").oninput = (event) => {
+  currentDbMountTableFilter = event.target.value || "";
+  renderDbMountTables(currentDbMountTableNames);
+};
 
 document.getElementById("dbTestBtn").onclick = async () => {
-
-  const sandboxId = sandboxSelect.value;
-
-  const dbMsg = document.getElementById("dbMsg");
-
-  if (!sandboxId) {
-
-    dbMsg.innerHTML = `<span style="color:red">${i18n.t('select_sandbox_first')}</span>`;
-
-    return;
-
-  }
-
   const payload = getDbFormData();
-
   if (!payload.database) {
-
-    dbMsg.innerHTML = `<span style="color:red">${i18n.t('enter_db_name')}</span>`;
-
+    setDbMessage(i18n.t("enter_db_name"), "red");
     return;
-
   }
-
-
-
-  dbMsg.innerHTML = `<span style="color:gray"><i class="fa-solid fa-spinner fa-spin"></i> ${i18n.t('testing')}</span>`;
-
+  setDbMessage(`<i class="fa-solid fa-spinner fa-spin"></i> ${i18n.t("testing")}`, "#6b7280");
   try {
-
-    const res = await api(`/api/sandboxes/${sandboxId}/db-test`, {
-
+    const res = await api("/api/db-connections/test", {
       method: "POST",
-
       body: JSON.stringify(payload)
-
     });
-
-    if (res.ok) {
-
-      dbMsg.innerHTML = `<span style="color:green"><i class="fa-solid fa-check"></i> ${i18n.t('test_success')}</span>`;
-
-      document.getElementById("dbTestBtn").className = "btn btn-outline";
-
-      document.getElementById("dbRegisterBtn").style.display = "block";
-
-    } else {
-
-      dbMsg.innerHTML = `<span style="color:red"><i class="fa-solid fa-xmark"></i> ${res.error}</span>`;
-
+    if (!res.ok) {
+      throw new Error(res.error || (i18n.t("error_db_config") || "DB configuration error"));
     }
-
+    setDbMessage(i18n.t("test_success") || "Test success", "green");
   } catch (e) {
-
-    dbMsg.innerHTML = `<span style="color:red"><i class="fa-solid fa-xmark"></i> ${e.message}</span>`;
-
+    setDbMessage(e.message, "red");
   }
-
 };
 
-
-
-document.getElementById("dbRegisterBtn").onclick = async () => {
-
-  const sandboxId = sandboxSelect.value;
-
-  const dbMsg = document.getElementById("dbMsg");
-
-  const tableContainer = document.getElementById("dbTablesContainer");
-
-  const tableList = document.getElementById("dbTablesList");
-
-  const dbTestBtn = document.getElementById("dbTestBtn");
-
-  const dbRegisterBtn = document.getElementById("dbRegisterBtn");
-
-
-
-  if (!sandboxId) {
-
-    dbMsg.innerHTML = `<span style="color:red">${i18n.t('select_sandbox_first')}</span>`;
-
-    return;
-
-  }
-
+document.getElementById("dbSaveConnectionBtn").onclick = async () => {
   const payload = getDbFormData();
-
   if (!payload.database) {
-
-    dbMsg.innerHTML = `<span style="color:red">${i18n.t('enter_db_name')}</span>`;
-
+    setDbMessage(i18n.t("enter_db_name"), "red");
     return;
-
   }
-
-
-
-  dbMsg.innerHTML = `<span style="color:gray"><i class="fa-solid fa-spinner fa-spin"></i> ${i18n.t('connecting')}</span>`;
-
-  tableContainer.style.display = "none";
-
-
-
+  const btn = document.getElementById("dbSaveConnectionBtn");
+  const originalText = btn.innerHTML;
+  btn.disabled = true;
+  btn.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i> ${i18n.t("processing")}`;
   try {
-
-    const res = await api(`/api/sandboxes/${sandboxId}/db-connection`, {
-
-      method: "POST",
-
+    const endpoint = currentDbConnectionId ? `/api/db-connections/${currentDbConnectionId}` : "/api/db-connections";
+    const method = currentDbConnectionId ? "PUT" : "POST";
+    const res = await api(endpoint, {
+      method,
       body: JSON.stringify(payload)
-
     });
-
-    dbMsg.innerHTML = `<span style="color:green"><i class="fa-solid fa-check"></i> ${i18n.t('connect_success_select')}</span>`;
-
+    currentDbConnectionId = res.connection.connection_id;
+    await loadDbConnections(currentDbConnectionId);
     document.getElementById("dbPassInput").value = "";
-
-
-
-    // Disable inputs so user just checks tables
-
-    document.getElementById("dbTypeInput").disabled = true;
-
-    document.getElementById("dbHostInput").disabled = true;
-
-    document.getElementById("dbPortInput").disabled = true;
-
-    document.getElementById("dbNameInput").disabled = true;
-
-    document.getElementById("dbUserInput").disabled = true;
-
-    document.getElementById("dbPassInput").disabled = true;
-
-
-
-    // Switch buttons
-
-    dbTestBtn.style.display = "none";
-
-    dbRegisterBtn.style.display = "none";
-
-
-
-    // Render the table selection checkboxes
-
-    if (res.tables && Array.isArray(res.tables) && res.tables.length > 0) {
-
-      dbTablesList.innerHTML = "";
-
-      res.tables.forEach(table => {
-
-        const div = document.createElement("div");
-
-        div.style.marginBottom = "8px";
-
-        const cb = document.createElement("input");
-
-        cb.type = "checkbox";
-
-        cb.value = table;
-
-        cb.id = `chk_${table}`;
-
-        cb.style.marginRight = "8px";
-
-        cb.className = "db-table-checkbox";
-
-
-
-        // Enforce MAX 5 check limit on UI side
-
-        cb.onchange = () => {
-
-          const checkedCount = document.querySelectorAll(".db-table-checkbox:checked").length;
-
-          if (checkedCount > 5) { // MAX_SELECTED_TABLES 
-
-            cb.checked = false;
-
-            alert(i18n.t('max_5_tables'));
-
-          }
-
-        };
-
-
-
-        const label = document.createElement("label");
-
-        label.htmlFor = `chk_${table}`;
-
-        label.textContent = table;
-
-        label.style.cursor = "pointer";
-
-
-
-        div.appendChild(cb);
-
-        div.appendChild(label);
-
-        dbTablesList.appendChild(div);
-
-      });
-
-      tableContainer.style.display = "block";
-
-    }
-
+    setDbMessage((i18n.t("success_save") || "Saved: ") + res.connection.name, "green");
   } catch (e) {
-
-    dbMsg.innerHTML = `<span style="color:red"><i class="fa-solid fa-xmark"></i> ${e.message}</span>`;
-
-  }
-
-};
-
-
-
-document.getElementById("dbSaveTablesBtn").onclick = async () => {
-
-  const sandboxId = sandboxSelect.value;
-
-  if (!sandboxId) return;
-
-
-
-  const checkedBoxes = Array.from(document.querySelectorAll(".db-table-checkbox:checked"));
-
-  const selectedTables = checkedBoxes.map(cb => cb.value);
-
-
-
-  if (selectedTables.length === 0) {
-
-    alert(i18n.t('select_one_table'));
-
-    return;
-
-  }
-
-
-
-  const originalBtnText = document.getElementById("dbSaveTablesBtn").innerHTML;
-
-  document.getElementById("dbSaveTablesBtn").innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i> ${i18n.t('processing')}`;
-
-  document.getElementById("dbSaveTablesBtn").disabled = true;
-
-
-
-  try {
-
-    const res = await api(`/api/sandboxes/${sandboxId}/db-tables`, {
-
-      method: "POST",
-
-      body: JSON.stringify({ tables: selectedTables })
-
-    });
-
-    // Refetch the sandbox tables to update the left sidebar immediately
-
-    await refreshProfile();
-
-
-
-    // Add an AI notification card to prompt the user
-
-    addCard(i18n.t("connect_db_success"), `<div style="color: #10b981; font-weight: 500;"><i class="fa-solid fa-circle-check"></i> ${i18n.t('connect_db_success_msg', { tables: selectedTables.join(", ") })}</div><div style="margin-top: 8px; font-size: 14px; color: #374151;">${i18n.t('connect_db_hint')}</div>`);
-
-
-
-    // Hide the table panel and modal after success
-
-    document.getElementById("dbTablesContainer").style.display = "none";
-
-    dbModal.style.display = "none";
-
-
-
-    // Reset buttons
-
-    document.getElementById("dbTestBtn").style.display = "block";
-
-    document.getElementById("dbRegisterBtn").style.display = "none";
-
-    document.getElementById("dbMsg").innerHTML = "";
-
-
-
-  } catch (e) {
-
-    alert(i18n.t('save_tables_failed') + ": " + e.message);
-
+    setDbMessage(e.message, "red");
   } finally {
-
-    document.getElementById("dbSaveTablesBtn").innerHTML = originalBtnText;
-
-    document.getElementById("dbSaveTablesBtn").disabled = false;
-
+    btn.disabled = false;
+    btn.innerHTML = originalText;
   }
-
 };
 
+document.getElementById("dbDeleteConnectionBtn").onclick = async () => {
+  if (!currentDbConnectionId) {
+    setDbMessage(i18n.t("select_db_connection_first") || "请选择数据库连接", "red");
+    return;
+  }
+  const selected = dbConnectionsData.find((item) => item.connection_id === currentDbConnectionId);
+  if (!confirm(i18n.t("confirm_delete_connection", { name: selected?.name || currentDbConnectionId }) || `Delete connection "${selected?.name || currentDbConnectionId}"?`)) return;
+  try {
+    await api(`/api/db-connections/${currentDbConnectionId}`, { method: "DELETE" });
+    await loadDbConnections("");
+    await refreshProfile();
+    clearDbForm();
+    setDbMessage(i18n.t("delete_success") || "Deleted", "green");
+  } catch (e) {
+    setDbMessage(e.message, "red");
+  }
+};
 
+document.getElementById("dbMountBtn").onclick = async () => {
+  const currentSandbox = getCurrentSandbox();
+  if (!currentSandbox) {
+    setDbMountMessage(i18n.t("select_sandbox_first"), "red");
+    return;
+  }
+  const connectionId = document.getElementById("dbMountConnectionSelect").value || "";
+  if (!connectionId) {
+    setDbMountMessage(i18n.t("select_db_connection_first") || "请先选择数据库连接", "red");
+    return;
+  }
+  setDbMountMessage(`<i class="fa-solid fa-spinner fa-spin"></i> ${i18n.t("connecting")}`, "#6b7280");
+  try {
+    const res = await api(`/api/sandboxes/${currentSandbox.sandbox_id}/db-connection`, {
+      method: "PUT",
+      body: JSON.stringify({ connection_id: connectionId })
+    });
+    renderDbMountTables(res.tables || []);
+    setDbMountMessage(i18n.t("connect_success_select") || "Connect success, please select tables", "green");
+    await refreshProfile();
+    await refreshDbMountTarget();
+  } catch (e) {
+    setDbMountMessage(e.message, "red");
+  }
+};
 
-// Toggle inputs based on DB type (e.g. SQLite doesn't need host/port)
+document.getElementById("dbUnmountBtn").onclick = async () => {
+  const currentSandbox = getCurrentSandbox();
+  if (!currentSandbox) {
+    setDbMountMessage(i18n.t("select_sandbox_first"), "red");
+    return;
+  }
+  try {
+    await api(`/api/sandboxes/${currentSandbox.sandbox_id}/db-connection`, {
+      method: "PUT",
+      body: JSON.stringify({ connection_id: null })
+    });
+    resetDbMountTables();
+    document.getElementById("dbMountConnectionSelect").value = "";
+    setDbMountMessage(i18n.t("db_unmounted") || "连接已解绑", "green");
+    await refreshProfile();
+    await refreshDbMountTarget();
+  } catch (e) {
+    setDbMountMessage(e.message, "red");
+  }
+};
 
-document.getElementById("dbTypeInput").onchange = (e) => {
+document.getElementById("dbMountSaveTablesBtn").onclick = async () => {
+  const currentSandbox = getCurrentSandbox();
+  if (!currentSandbox) return;
+  const checkedBoxes = Array.from(document.querySelectorAll("#dbMountTablesList .db-table-checkbox:checked"));
+  const selectedTables = checkedBoxes.map((cb) => cb.value);
+  if (selectedTables.length === 0) {
+    alert(i18n.t("select_one_table"));
+    return;
+  }
+  const btn = document.getElementById("dbMountSaveTablesBtn");
+  const originalText = btn.innerHTML;
+  btn.disabled = true;
+  btn.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i> ${i18n.t("processing")}`;
+  try {
+    await api(`/api/sandboxes/${currentSandbox.sandbox_id}/db-tables`, {
+      method: "POST",
+      body: JSON.stringify({ tables: selectedTables })
+    });
+    await refreshProfile();
+    addCard(
+      i18n.t("connect_db_success"),
+      `<div style="color: #10b981; font-weight: 500;"><i class="fa-solid fa-circle-check"></i> ${i18n.t("connect_db_success_msg", { tables: selectedTables.join(", ") })}</div><div style="margin-top: 8px; font-size: 14px; color: #374151;">${i18n.t("connect_db_hint")}</div>`
+    );
+    dbMountModal.style.display = "none";
+  } catch (e) {
+    alert((i18n.t("save_tables_failed") || "Save tables failed") + ": " + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = originalText;
+  }
+};
 
-  const isSqlite = e.target.value === "sqlite";
-
-  document.getElementById("dbHostInput").style.display = isSqlite ? "none" : "";
-
-  document.getElementById("dbPortInput").style.display = isSqlite ? "none" : "";
-
-  document.getElementById("dbUserInput").style.display = isSqlite ? "none" : "";
-
-  document.getElementById("dbPassInput").style.display = isSqlite ? "none" : "";
-
-  document.getElementById("dbNameInput").placeholder = isSqlite ? i18n.t('sqlite_path_placeholder') : "DB Name";
-
+document.getElementById("dbTypeInput").onchange = () => {
+  toggleDbTypeFields();
 };
 
 document.getElementById("dbTypeInput").dispatchEvent(new Event("change"));
-
-
-
 // --- Workspace CRUD Events ---
 
 document.getElementById("btnNewSandbox").onclick = async () => {

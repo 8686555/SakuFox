@@ -20,6 +20,7 @@ MAX_SELECTED_TABLES = 5
 # --- Database Configuration ---
 DEFAULT_DB_TYPE = "sqlite"
 DEFAULT_DB_URL = "sqlite:///./sakufox.db"
+DB_CONNECTION_SECRET_KEY = "replace-with-your-secret-key"
 
 # ── 迭代式分析核心提示词（Multi-Step Agentic） ─────────────────────────
 ITERATION_SYSTEM_PROMPT = (
@@ -36,6 +37,10 @@ ITERATION_SYSTEM_PROMPT = (
     "- **变量持久化**：所有步骤共享同一个变量空间。你在步骤 1 定义的变量，在后续所有步骤中均可直接使用。\n"
     "- **别名透明**：SQL 中的 `AS alias` 会被 100% 保留为 Dataframe 的列名。请务必为聚合函数（SUM, COUNT 等）指定别名。\n"
     "- **遇错即停**：如果任意步骤失败，执行会立即中断。请确保每一步的逻辑严谨。\n"
+    "【Python 安全规则】\n"
+    "- 在使用 `iloc[0]`、`idxmax()` 或直接写 `df['col']` 之前，先检查 DataFrame 是否为空、字段是否存在。\n"
+    "- 当数据可能缺失时，优先使用 `safe_first_row(df)`、`safe_get_value(df, 'col', default=None)`、`safe_has_columns(df, 'col1', 'col2')`。\n"
+    "- 如果表或过滤后的 DataFrame 可能为空，不要直接抛异常，优先退化为摘要文本。\n\n"
     "\n"
     "【Python 使用示例】\n"
     "- 直接使用注入的变量：`final_df = df0.merge(df1, on='id')`\n"
@@ -52,6 +57,9 @@ ITERATION_SYSTEM_PROMPT = (
     "- datetime / date / timedelta: 日期类\n"
     "- Counter / defaultdict: collections 常用类\n"
     "- execute_select_sql(sql): 沙盒内执行 SQL，返回 list[dict]\n"
+    "- safe_first_row(df): 安全返回首行字典，空表时返回 None\n"
+    "- safe_get_value(df, col, default=None): 安全获取某列某行的值，缺列或越界时返回默认值\n"
+    "- safe_has_columns(df, *cols): 检查 DataFrame 是否同时包含多个列\n"
     "- uploaded_dataframes: 用户上传文件字典，key 为文件名\n"
     "- uploaded_file_paths: 用户上传文件物理路径字典，可使用 pd.read_excel(uploaded_file_paths['文件名']) 加载\n"
     "- final_df: 必须赋值，最终输出 DataFrame\n"
@@ -130,6 +138,7 @@ class AppConfig:
     insight_prompt_actions: str
     db_type: str
     db_url: str
+    db_connection_secret_key: str
 
 
 def load_config() -> AppConfig:
@@ -157,4 +166,5 @@ def load_config() -> AppConfig:
         insight_prompt_actions=_pick(INSIGHT_PROMPT_ACTIONS, os.getenv("INSIGHT_PROMPT_ACTIONS", ""), dotenv.get("INSIGHT_PROMPT_ACTIONS", "")),
         db_type=_pick(os.getenv("DB_TYPE", ""), dotenv.get("DB_TYPE", ""), DEFAULT_DB_TYPE),
         db_url=_pick(os.getenv("DB_URL", ""), dotenv.get("DB_URL", ""), DEFAULT_DB_URL),
+        db_connection_secret_key=DB_CONNECTION_SECRET_KEY,
     )
