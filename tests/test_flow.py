@@ -192,6 +192,105 @@ def test_mount_unknown_skill_returns_400():
     assert "Skills not found" in res.json()["detail"]
 
 
+def test_save_skill_persists_context_snapshot_metadata():
+    headers = _login_admin()
+
+    client.post(
+        "/api/sandboxes/sb_flights_overview/skills",
+        headers=headers,
+        json={"skills": []},
+    )
+    client.post(
+        "/api/sandboxes/sb_flights_overview/knowledge_bases",
+        headers=headers,
+        json={"knowledge_bases": []},
+    )
+
+    _, _, seed_proposal_id = _run_mock_iteration(headers, message="seed mounted context skill")
+    seed_skill_res = client.post(
+        "/api/skills/save",
+        headers=headers,
+        json={
+            "proposal_id": seed_proposal_id,
+            "name": "seed-mounted-context-skill",
+            "knowledge": ["mounted-context-rule"],
+        },
+    )
+    assert seed_skill_res.status_code == 200
+    mounted_skill_id = seed_skill_res.json()["skill"]["skill_id"]
+
+    mount_skill_res = client.post(
+        "/api/sandboxes/sb_flights_overview/skills",
+        headers=headers,
+        json={"skills": [mounted_skill_id]},
+    )
+    assert mount_skill_res.status_code == 200
+
+    kb_res = client.post(
+        "/api/knowledge_bases",
+        headers=headers,
+        json={"name": "snapshot-kb", "content": "snapshot content"},
+    )
+    assert kb_res.status_code == 200
+    kb_id = kb_res.json()["id"]
+
+    mount_kb_res = client.post(
+        "/api/sandboxes/sb_flights_overview/knowledge_bases",
+        headers=headers,
+        json={"knowledge_bases": [kb_id]},
+    )
+    assert mount_kb_res.status_code == 200
+
+    upload_res = client.post(
+        "/api/data/upload",
+        headers=headers,
+        data={"sandbox_id": "sb_flights_overview"},
+        files=[("files", ("orders.csv", "a,b\n1,2\n", "text/csv"))],
+    )
+    assert upload_res.status_code == 200
+
+    iterate_res = client.post(
+        "/api/chat/iterate",
+        headers=headers,
+        json={
+            "sandbox_id": "sb_flights_overview",
+            "message": "analyze with full context snapshot",
+            "provider": "mock",
+            "selected_tables": ["tutorial_flights"],
+            "selected_files": ["orders.csv"],
+        },
+    )
+    assert iterate_res.status_code == 200
+    iterate_events = _parse_ndjson_events(iterate_res.text)
+    complete_event = next(event for event in iterate_events if event["type"] == "iteration_complete")
+    session_id = complete_event["data"]["session_id"]
+    proposal_id = complete_event["data"]["proposal_id"]
+
+    save_res = client.post(
+        "/api/skills/save",
+        headers=headers,
+        json={"proposal_id": proposal_id, "name": "snapshot-target-skill"},
+    )
+    assert save_res.status_code == 200
+    saved_skill = save_res.json()["skill"]
+    snapshot = saved_skill["layers"]["context_snapshot"]
+
+    assert snapshot["source"]["session_id"] == session_id
+    assert snapshot["source"]["sandbox_id"] == "sb_flights_overview"
+    assert snapshot["source"]["sandbox_name"]
+    assert snapshot["source"]["session_title"]
+    assert snapshot["conversation_link"]["dashboard_path"] == f"/web/dashboard.html?session_id={session_id}"
+    assert snapshot["tables"]["selected_tables"] == ["tutorial_flights"]
+    assert "tutorial_flights" in snapshot["tables"]["sandbox_tables"]
+    assert any(item["skill_id"] == mounted_skill_id for item in snapshot["mounted_skills"])
+    assert any(item["id"] == kb_id for item in snapshot["knowledge_bases"])
+    assert any(item["name"] == "orders.csv" and item["selected"] for item in snapshot["files"])
+    assert snapshot["context_sources"]["selected_tables"] is True
+    assert snapshot["context_sources"]["selected_files"] is True
+    assert snapshot["context_sources"]["mounted_skills"] is True
+    assert snapshot["context_sources"]["knowledge_bases"] is True
+
+
 def test_auto_analyze_stops_when_model_stops_using_tools_and_persists_report(monkeypatch):
     headers = _login_admin()
     call_state = {"count": 0}
@@ -293,6 +392,312 @@ def test_auto_analyze_stops_when_model_stops_using_tools_and_persists_report(mon
     assert payload["report_title"] == "Auto Report"
     assert payload["final_report_summary"] == "done"
     assert len(payload["final_report_chart_bindings"]) == 1
+
+
+def test_auto_analyze_normalizes_wrapped_html_before_persist(monkeypatch):
+    headers = _login_admin()
+
+    def fake_run_analysis_iteration(*, message, sandbox, iteration_history, business_knowledge, provider=None, model=None):
+        yield {
+            "type": "result",
+            "data": {
+                "steps": [],
+                "conclusions": [{"text": "done", "confidence": 0.8}],
+                "hypotheses": [],
+                "action_items": [],
+                "tools_used": [],
+                "explanation": "done",
+                "final_report_outline": [],
+            },
+        }
+
+    wrapped_html = (
+        '{"title":"wrapped","summary":"wrapped","html_document":"<!doctype html>'
+        '<html><body><h1>中文报告</h1></body></html>","chart_bindings":[]}'
+    )
+    monkeypatch.setattr(main_module, "run_analysis_iteration", fake_run_analysis_iteration)
+    monkeypatch.setattr(
+        main_module,
+        "generate_auto_analysis_report_bundle",
+        lambda **kwargs: {
+            "title": "Auto Wrapped",
+            "summary": "wrapped",
+            "html_document": wrapped_html,
+            "chart_bindings": [],
+            "legacy_markdown": "## 执行摘要\n- wrapped",
+        },
+    )
+    monkeypatch.setattr(main_module, "generate_auto_analysis_report", lambda **kwargs: "## 执行摘要\n- wrapped")
+
+    res = client.post(
+        "/api/chat/auto-analyze",
+        headers=headers,
+        json={
+            "sandbox_id": "sb_flights_overview",
+            "message": "auto analyze wrapped html",
+            "provider": "mock",
+        },
+    )
+    assert res.status_code == 200
+    events = _parse_ndjson_events(res.text)
+    complete_event = next(event for event in events if event["type"] == "analysis_complete")
+
+    history = client.get(
+        f"/api/chat/history?session_id={complete_event['data']['session_id']}",
+        headers=headers,
+    )
+    assert history.status_code == 200
+    saved = history.json()["iterations"][0]
+    final_html = str(saved["final_report_html"])
+    assert final_html.strip()
+    assert not final_html.lstrip().startswith("{")
+    assert "<html" in final_html.lower()
+    assert "中文报告" in final_html
+
+
+def test_auto_analyze_converts_markdown_html_field_to_real_html(monkeypatch):
+    headers = _login_admin()
+
+    def fake_run_analysis_iteration(*, message, sandbox, iteration_history, business_knowledge, provider=None, model=None):
+        yield {
+            "type": "result",
+            "data": {
+                "steps": [],
+                "conclusions": [{"text": "done", "confidence": 0.8}],
+                "hypotheses": [],
+                "action_items": [],
+                "tools_used": [],
+                "explanation": "done",
+                "final_report_outline": [],
+            },
+        }
+
+    monkeypatch.setattr(main_module, "run_analysis_iteration", fake_run_analysis_iteration)
+    monkeypatch.setattr(
+        main_module,
+        "generate_auto_analysis_report_bundle",
+        lambda **kwargs: {
+            "title": "Auto Markdown",
+            "summary": "md summary",
+            "html_document": "# 一级标题\n## 二级标题\n- 要点一\n- 要点二",
+            "chart_bindings": [{"chart_id": "chart_1", "option": {"xAxis": {}, "yAxis": {}, "series": []}, "height": 320}],
+            "legacy_markdown": "",
+        },
+    )
+    monkeypatch.setattr(main_module, "generate_auto_analysis_report", lambda **kwargs: "## 执行摘要\n- fallback")
+
+    res = client.post(
+        "/api/chat/auto-analyze",
+        headers=headers,
+        json={
+            "sandbox_id": "sb_flights_overview",
+            "message": "auto analyze markdown html field",
+            "provider": "mock",
+        },
+    )
+    assert res.status_code == 200
+    events = _parse_ndjson_events(res.text)
+    complete_event = next(event for event in events if event["type"] == "analysis_complete")
+
+    history = client.get(
+        f"/api/chat/history?session_id={complete_event['data']['session_id']}",
+        headers=headers,
+    )
+    assert history.status_code == 200
+    saved = history.json()["iterations"][0]
+    final_html = str(saved["final_report_html"])
+    assert "<html" in final_html.lower()
+    assert "<h1>" in final_html.lower()
+    assert "<ul>" in final_html.lower()
+    assert "data-chart-id=\"chart_1\"" in final_html
+
+    report_res = client.get(
+        f"/api/reports/iterations/{complete_event['data']['iteration_id']}",
+        headers=headers,
+    )
+    assert report_res.status_code == 200
+    payload = report_res.json()
+    assert "<h1>" in str(payload["final_report_html"]).lower()
+    assert "data-chart-id=\"chart_1\"" in str(payload["final_report_html"])
+
+
+def test_auto_analyze_round_message_respects_zh_language_header(monkeypatch):
+    headers = _login_admin()
+    headers["X-Language"] = "zh"
+    captured: dict[str, str] = {}
+
+    def fake_run_analysis_iteration(*, message, sandbox, iteration_history, business_knowledge, provider=None, model=None):
+        captured["message"] = message
+        yield {
+            "type": "result",
+            "data": {
+                "steps": [],
+                "conclusions": [{"text": "done", "confidence": 0.7}],
+                "hypotheses": [],
+                "action_items": [],
+                "tools_used": [],
+                "explanation": "done",
+                "final_report_outline": [],
+            },
+        }
+
+    monkeypatch.setattr(main_module, "run_analysis_iteration", fake_run_analysis_iteration)
+    monkeypatch.setattr(
+        main_module,
+        "generate_auto_analysis_report_bundle",
+        lambda **kwargs: {
+            "title": "Auto ZH",
+            "summary": "zh",
+            "html_document": "<!doctype html><html><body><h1>zh</h1></body></html>",
+            "chart_bindings": [],
+            "legacy_markdown": "## 执行摘要\n- zh",
+        },
+    )
+    monkeypatch.setattr(main_module, "generate_auto_analysis_report", lambda **kwargs: "## 执行摘要\n- zh")
+
+    res = client.post(
+        "/api/chat/auto-analyze",
+        headers=headers,
+        json={
+            "sandbox_id": "sb_flights_overview",
+            "message": "请做一次自动分析",
+            "provider": "mock",
+        },
+    )
+    assert res.status_code == 200
+    assert "必须使用简体中文" in captured["message"]
+
+
+def test_auto_analyze_returns_localized_error_when_html_report_generation_fails(monkeypatch):
+    headers = _login_admin()
+    headers["X-Language"] = "zh"
+
+    def fake_run_analysis_iteration(*, message, sandbox, iteration_history, business_knowledge, provider=None, model=None):
+        yield {
+            "type": "result",
+            "data": {
+                "steps": [],
+                "conclusions": [{"text": "done", "confidence": 0.7}],
+                "hypotheses": [],
+                "action_items": [],
+                "tools_used": [],
+                "explanation": "done",
+                "final_report_outline": [],
+            },
+        }
+
+    monkeypatch.setattr(main_module, "run_analysis_iteration", fake_run_analysis_iteration)
+    monkeypatch.setattr(
+        main_module,
+        "generate_auto_analysis_report_bundle",
+        lambda **kwargs: (_ for _ in ()).throw(
+            RuntimeError("AI failed to generate qualified HTML report after 3 attempts: html_document is not a standalone HTML document")
+        ),
+    )
+
+    res = client.post(
+        "/api/chat/auto-analyze",
+        headers=headers,
+        json={
+            "sandbox_id": "sb_flights_overview",
+            "message": "自动分析失败提示",
+            "provider": "mock",
+        },
+    )
+    assert res.status_code == 200
+    events = _parse_ndjson_events(res.text)
+    error_event = next(event for event in events if event["type"] == "error")
+    assert "连续 3 次都未生成合格的 HTML 报告" in error_event["message"]
+
+
+def test_iterate_runtime_error_is_localized_and_does_not_raise_unboundlocal(monkeypatch):
+    headers = _login_admin()
+    headers["X-Language"] = "zh"
+
+    def fake_run_analysis_iteration(*, message, sandbox, iteration_history, business_knowledge, provider=None, model=None):
+        raise RuntimeError("AI failed to generate qualified HTML report after 3 attempts: html_document is not a standalone HTML document")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(main_module, "run_analysis_iteration", fake_run_analysis_iteration)
+
+    res = client.post(
+        "/api/chat/iterate",
+        headers=headers,
+        json={
+            "sandbox_id": "sb_flights_overview",
+            "message": "触发重试失败",
+            "provider": "mock",
+        },
+    )
+    assert res.status_code == 200
+    events = _parse_ndjson_events(res.text)
+    error_event = next(event for event in events if event["type"] == "error")
+    assert "连续 3 次都未生成合格的 HTML 报告" in error_event["message"]
+
+
+def test_propose_skill_from_auto_analysis_returns_snapshot_and_non_empty_fields(monkeypatch):
+    headers = _login_admin()
+
+    def fake_run_analysis_iteration(*, message, sandbox, iteration_history, business_knowledge, provider=None, model=None):
+        yield {
+            "type": "result",
+            "data": {
+                "steps": [],
+                "conclusions": [{"text": "发现成本异常", "confidence": 0.8}],
+                "hypotheses": [],
+                "action_items": ["优化差旅审批策略"],
+                "tools_used": [],
+                "explanation": "done",
+                "final_report_outline": [],
+            },
+        }
+
+    monkeypatch.setattr(main_module, "run_analysis_iteration", fake_run_analysis_iteration)
+    monkeypatch.setattr(
+        main_module,
+        "generate_auto_analysis_report_bundle",
+        lambda **kwargs: {
+            "title": "自动分析报告",
+            "summary": "摘要内容",
+            "html_document": "<!doctype html><html><body><h1>自动分析报告</h1></body></html>",
+            "chart_bindings": [],
+            "legacy_markdown": "## 执行摘要\n- 摘要内容",
+        },
+    )
+    monkeypatch.setattr(main_module, "generate_auto_analysis_report", lambda **kwargs: "## 执行摘要\n- 摘要内容")
+    monkeypatch.setattr(main_module, "generate_skill_proposal", lambda **kwargs: {"name": "", "description": "", "tags": [], "knowledge": []})
+
+    auto_res = client.post(
+        "/api/chat/auto-analyze",
+        headers=headers,
+        json={
+            "sandbox_id": "sb_flights_overview",
+            "message": "自动分析差旅成本",
+            "provider": "mock",
+        },
+    )
+    assert auto_res.status_code == 200
+    auto_events = _parse_ndjson_events(auto_res.text)
+    complete_event = next(event for event in auto_events if event["type"] == "analysis_complete")
+    proposal_id = complete_event["data"]["proposal_id"]
+    session_id = complete_event["data"]["session_id"]
+
+    propose_res = client.post(
+        "/api/skills/propose",
+        headers=headers,
+        json={
+            "proposal_id": proposal_id,
+            "message": "自动分析差旅成本",
+            "sandbox_id": "sb_flights_overview",
+        },
+    )
+    assert propose_res.status_code == 200
+    payload = propose_res.json()
+    assert payload["name"]
+    assert payload["description"]
+    assert isinstance(payload["knowledge"], list)
+    assert payload["context_snapshot"]["source"]["session_id"] == session_id
+    assert payload["context_snapshot"]["conversation_link"]["dashboard_path"] == f"/web/dashboard.html?session_id={session_id}"
 
 
 def test_auto_analyze_marks_max_rounds_hit(monkeypatch):
@@ -413,6 +818,14 @@ def test_auto_analyze_injects_session_patches_and_skill_save_works(monkeypatch):
     assert save_res.status_code == 200
     saved_skill = save_res.json()["skill"]
     assert saved_skill["name"] == "auto-analysis-skill"
+    snapshot = saved_skill["layers"]["context_snapshot"]
+    assert snapshot["source"]["mode"] == "auto_analysis"
+    assert snapshot["source"]["session_id"] == session_id
+    assert snapshot["conversation_link"]["dashboard_path"] == f"/web/dashboard.html?session_id={session_id}"
+    assert snapshot["report"]["report_title"] == "Auto Report"
+    assert snapshot["report"]["stop_reason"] == "model_stopped_using_tools"
+    assert snapshot["report"]["rounds_completed"] >= 1
+    assert snapshot["report"]["max_rounds_hit"] is False
 
 
 def test_auto_analyze_no_tool_call_with_direct_report_does_not_surface_parse_error(monkeypatch):
@@ -497,6 +910,43 @@ def test_auto_analyze_allows_empty_message_and_returns_report_url(monkeypatch):
     complete = next(event for event in events if event["type"] == "analysis_complete")
     assert complete["data"]["report_url"].startswith("/web/report.html?iteration_id=")
     assert complete["data"]["report_title"] == "Auto Empty"
+
+
+def test_overwrite_skill_keeps_previous_context_snapshot_in_history():
+    headers = _login_admin()
+
+    _, first_session_id, first_proposal_id = _run_mock_iteration(headers, message="first snapshot version")
+    first_save_res = client.post(
+        "/api/skills/save",
+        headers=headers,
+        json={"proposal_id": first_proposal_id, "name": "overwrite-context-skill"},
+    )
+    assert first_save_res.status_code == 200
+    first_skill = first_save_res.json()["skill"]
+    skill_id = first_skill["skill_id"]
+    first_snapshot = first_skill["layers"]["context_snapshot"]
+    assert first_snapshot["source"]["session_id"] == first_session_id
+
+    _, second_session_id, second_proposal_id = _run_mock_iteration(headers, message="second snapshot version")
+    overwrite_res = client.post(
+        "/api/skills/save",
+        headers=headers,
+        json={
+            "proposal_id": second_proposal_id,
+            "name": "overwrite-context-skill",
+            "overwrite_skill_id": skill_id,
+        },
+    )
+    assert overwrite_res.status_code == 200
+    overwritten_skill = overwrite_res.json()["skill"]
+    assert overwritten_skill["version"] == 2
+    assert overwritten_skill["layers"]["context_snapshot"]["source"]["session_id"] == second_session_id
+
+    history = overwritten_skill["history"]
+    assert history
+    previous_snapshot = history[-1]["layers"]["context_snapshot"]
+    assert previous_snapshot["source"]["session_id"] == first_session_id
+    assert previous_snapshot["source"]["proposal_id"] == first_proposal_id
 
 
 def test_iterate_receives_latest_auto_report_summary_in_history(monkeypatch):

@@ -12,6 +12,7 @@ let uploadedFiles = [];
 let currentEditingSkillId = ""; // skill being edited, or "" for create mode
 
 let skillModal = null; // Global reference for the skill detail modal
+let skillSourceSessionId = "";
 
 const userInfo = document.getElementById("userInfo");
 
@@ -124,6 +125,86 @@ function normalizeStaticText() {
 
   if (navAnalysis) navAnalysis.textContent = i18n.t("nav_analysis") || "数据分析";
   if (navKnowledge) navKnowledge.textContent = i18n.t("nav_knowledge") || "知识库配置";
+}
+
+function setSessionIdInUrl(value) {
+  const url = new URL(window.location.href);
+  if (value) url.searchParams.set("session_id", value);
+  else url.searchParams.delete("session_id");
+  window.history.replaceState({}, "", url.toString());
+}
+
+function getSessionIdFromUrl() {
+  const url = new URL(window.location.href);
+  return (url.searchParams.get("session_id") || "").trim();
+}
+
+function tr(key, fallback, params = {}) {
+  const text = i18n.t(key, params);
+  if (!text || text === key) return fallback;
+  return text;
+}
+
+function renderSkillContextSnapshot(snapshot) {
+  const contentEl = document.getElementById("skillContextSnapshotContent");
+  const jumpBtn = document.getElementById("jumpSourceSessionBtn");
+  if (!contentEl || !jumpBtn) return;
+
+  skillSourceSessionId = "";
+  jumpBtn.style.display = "none";
+
+  if (!snapshot || typeof snapshot !== "object") {
+    contentEl.innerHTML = `<div class="empty-state">${tr("no_context_snapshot", "该经验暂无来源对话元数据")}</div>`;
+    return;
+  }
+
+  const source = snapshot.source || {};
+  const db = snapshot.database || {};
+  const tables = snapshot.tables || {};
+  const mountedSkills = snapshot.mounted_skills || [];
+  const knowledgeBases = snapshot.knowledge_bases || [];
+  const files = snapshot.files || [];
+  const sessionPatches = snapshot.session_patches || [];
+  const contextSources = snapshot.context_sources || {};
+
+  const sourceSessionId = (source.session_id || "").trim();
+  skillSourceSessionId = sourceSessionId;
+  if (sourceSessionId) {
+    jumpBtn.style.display = "block";
+  }
+
+  const mountedText = mountedSkills.length
+    ? mountedSkills.map(item => escapeHtml(`${item.name || item.skill_id || ""}${item.version ? ` (v${item.version})` : ""}`)).join(", ")
+    : "-";
+  const kbText = knowledgeBases.length
+    ? knowledgeBases.map(item => escapeHtml(`${item.name || item.id || ""}${item.sync_type ? ` [${item.sync_type}]` : ""}`)).join(", ")
+    : "-";
+  const fileText = files.length
+    ? files.map(item => escapeHtml(`${item.name || ""}${item.selected ? " (selected)" : ""}`)).join(", ")
+    : "-";
+  const patchText = sessionPatches.length ? escapeHtml(sessionPatches.join(" | ")) : "-";
+  const selectedTablesText = (tables.selected_tables || []).length ? escapeHtml((tables.selected_tables || []).join(", ")) : "-";
+  const sandboxTablesText = (tables.sandbox_tables || []).length ? escapeHtml((tables.sandbox_tables || []).join(", ")) : "-";
+  const sourceFlags = Object.keys(contextSources)
+    .filter(key => !!contextSources[key])
+    .join(", ") || "-";
+  const dbText = db && (db.db_type || db.database)
+    ? escapeHtml(`${db.db_type || ""} ${db.host || ""}${db.port ? `:${db.port}` : ""} / ${db.database || ""}`.trim())
+    : "-";
+
+  contentEl.innerHTML = `
+    <div><strong>${tr("source_conversation", "来源会话")}:</strong> ${escapeHtml(source.session_title || "-")}</div>
+    <div><strong>${tr("session_id_label", "会话ID")}:</strong> ${escapeHtml(sourceSessionId || "-")}</div>
+    <div><strong>${tr("sandbox_label", "沙盒")}:</strong> ${escapeHtml(source.sandbox_name || source.sandbox_id || "-")}</div>
+    <div><strong>${tr("db_label", "数据库")}:</strong> ${dbText}</div>
+    <div><strong>${tr("selected_tables_label", "选中表")}:</strong> ${selectedTablesText}</div>
+    <div><strong>${tr("sandbox_tables_label", "沙盒表")}:</strong> ${sandboxTablesText}</div>
+    <div><strong>${tr("mounted_skills_label", "挂载经验")}:</strong> ${mountedText}</div>
+    <div><strong>${tr("knowledge_bases_label", "知识库")}:</strong> ${kbText}</div>
+    <div><strong>${tr("related_files_label", "关联文件")}:</strong> ${fileText}</div>
+    <div><strong>${tr("session_patches_label", "会话补丁")}:</strong> ${patchText}</div>
+    <div><strong>${tr("context_sources_label", "上下文来源")}:</strong> ${escapeHtml(sourceFlags)}</div>
+  `;
 }
 
 
@@ -592,6 +673,7 @@ function loadSkillIntoForm(skillId, skill) {
   const knowledge = (skill.layers?.knowledge || []).join("\n");
 
   if (document.getElementById("skillKnowledgeInput")) document.getElementById("skillKnowledgeInput").value = knowledge;
+  renderSkillContextSnapshot(skill.layers?.context_snapshot || null);
 
 
 
@@ -648,6 +730,7 @@ function cancelSkillEdit() {
   if (document.getElementById("skillTagsInput")) document.getElementById("skillTagsInput").value = "";
 
   if (document.getElementById("skillKnowledgeInput")) document.getElementById("skillKnowledgeInput").value = "";
+  renderSkillContextSnapshot(null);
 
   if (skillModal) skillModal.style.display = "none";
 
@@ -764,6 +847,7 @@ async function switchSession(targetSessionId) {
   if (targetSessionId === sessionId) return;
 
   sessionId = targetSessionId;
+  setSessionIdInUrl(targetSessionId);
 
   lastProposalId = "";
 
@@ -948,6 +1032,7 @@ async function switchSession(targetSessionId) {
 function startNewSession() {
 
   sessionId = "";
+  setSessionIdInUrl("");
 
   lastProposalId = "";
 
@@ -1274,6 +1359,41 @@ function renderMarkdownContent(markdown) {
 function renderAutoAnalysisCard(wrapper, state) {
 
   const chartRefs = [];
+  const lang = (window.i18n && i18n.lang) || localStorage.getItem("lang") || "zh";
+  const isEn = lang === "en";
+  const roundTitle = (roundNo) => (isEn ? `Round ${roundNo}` : `第 ${roundNo} 轮`);
+  const noToolText = isEn ? "No tool calls" : "无工具调用";
+  const findingsTitle = isEn ? "Key Findings" : "关键结论";
+  const actionsTitle = isEn ? "Action Items" : "行动建议";
+  const previewTitle = isEn ? "Data Preview" : "数据预览";
+  const openReportText = isEn ? "Open Full Report" : "打开完整报告";
+  const exportPdfText = isEn ? "Export PDF" : "导出 PDF";
+  const reportReadyHint = isEn
+    ? "After report generation, you can open the full report or export PDF."
+    : "报告生成后可打开完整报告与导出 PDF";
+  const reportSummaryPending = isEn ? "Generating report summary..." : "报告摘要生成中...";
+  const reportFollowupHint = isEn
+    ? "You can continue asking questions based on this report, or start another one-click analysis."
+    : "可继续在聊天里追问该报告，或再次发起一键分析。";
+  const analyzingText = isEn ? "Analyzing" : "正在分析";
+  const stopReasonLabel = isEn ? "Stop reason" : "停止原因";
+
+  const formatStopReason = (reason) => {
+    const text = String(reason || "").trim();
+    if (!text) return "";
+    const map = isEn
+      ? {
+          model_stopped_using_tools: "model stopped using tools",
+          max_rounds_reached: "max rounds reached",
+          execution_error: "execution error",
+        }
+      : {
+          model_stopped_using_tools: "模型停止工具调用",
+          max_rounds_reached: "达到最大轮次",
+          execution_error: "执行出错",
+        };
+    return map[text] || text;
+  };
 
   const roundsHtml = (state.rounds || []).map((round) => {
 
@@ -1317,7 +1437,7 @@ function renderAutoAnalysisCard(wrapper, state) {
 
       <details class="code-details" style="margin-top:8px;">
 
-        <summary style="font-size:12px;font-weight:600;">${escapeHtml(step.tool || "step")} ${idx + 1}</summary>
+        <summary style="font-size:12px;font-weight:600;">${escapeHtml(step.tool || (isEn ? "step" : "步骤"))} ${idx + 1}</summary>
 
         <pre><code>${escapeHtml(step.code || "")}</code></pre>
 
@@ -1343,21 +1463,21 @@ function renderAutoAnalysisCard(wrapper, state) {
 
         <div style="display:flex;justify-content:space-between;gap:12px;align-items:center;margin-bottom:10px;">
 
-          <div style="font-weight:600;color:var(--text-main);">第 ${round.round} 轮</div>
+          <div style="font-weight:600;color:var(--text-main);">${roundTitle(round.round)}</div>
 
-          <div style="font-size:12px;color:var(--text-muted);">${escapeHtml((result.tools_used || []).join(", ") || "无工具调用")}</div>
+          <div style="font-size:12px;color:var(--text-muted);">${escapeHtml((result.tools_used || []).join(", ") || noToolText)}</div>
 
         </div>
 
         ${thoughtHtml}
 
-        ${conclusions ? `<div style="margin-top:10px;"><div style="font-weight:600;font-size:13px;margin-bottom:6px;">关键结论</div><ul style="padding-left:18px;margin:0;">${conclusions}</ul></div>` : ""}
+        ${conclusions ? `<div style="margin-top:10px;"><div style="font-weight:600;font-size:13px;margin-bottom:6px;">${findingsTitle}</div><ul style="padding-left:18px;margin:0;">${conclusions}</ul></div>` : ""}
 
-        ${actions ? `<div style="margin-top:10px;"><div style="font-weight:600;font-size:13px;margin-bottom:6px;">行动建议</div><ul style="padding-left:18px;margin:0;">${actions}</ul></div>` : ""}
+        ${actions ? `<div style="margin-top:10px;"><div style="font-weight:600;font-size:13px;margin-bottom:6px;">${actionsTitle}</div><ul style="padding-left:18px;margin:0;">${actions}</ul></div>` : ""}
 
         ${chartsHtml}
 
-        ${rows.length ? `<details style="margin-top:10px;"><summary style="cursor:pointer;font-size:12px;">数据预览 (${rows.length} ${i18n.t("rows") || "rows"})</summary>${jsonToTable(rows.slice(0, 50))}</details>` : ""}
+        ${rows.length ? `<details style="margin-top:10px;"><summary style="cursor:pointer;font-size:12px;">${previewTitle} (${rows.length} ${i18n.t("rows") || (isEn ? "rows" : "行")})</summary>${jsonToTable(rows.slice(0, 50))}</details>` : ""}
 
         ${stepsHtml}
 
@@ -1369,7 +1489,7 @@ function renderAutoAnalysisCard(wrapper, state) {
 
   }).join("");
 
-  const reportTitle = state.reportTitle || "自动分析报告";
+  const reportTitle = state.reportTitle || (isEn ? "Auto Analysis Report" : "自动分析报告");
   const reportSummary = (state.reportSummary || "").trim();
   const reportLang = (window.i18n && i18n.lang) || localStorage.getItem("lang") || "zh";
   const reportUrlBase = state.reportUrl || "";
@@ -1380,16 +1500,16 @@ function renderAutoAnalysisCard(wrapper, state) {
     : "";
   const reportActions = reportUrl
     ? `<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;">
-        <button class="btn btn-outline btn-sm open-report-btn" data-url="${escapeHtml(reportUrl)}"><i class="fa-solid fa-arrow-up-right-from-square"></i> 打开完整报告</button>
-        <button class="btn btn-outline btn-sm print-report-btn" data-url="${escapeHtml(reportUrl)}"><i class="fa-solid fa-file-pdf"></i> 导出 PDF</button>
+        <button class="btn btn-outline btn-sm open-report-btn" data-url="${escapeHtml(reportUrl)}"><i class="fa-solid fa-arrow-up-right-from-square"></i> ${openReportText}</button>
+        <button class="btn btn-outline btn-sm print-report-btn" data-url="${escapeHtml(reportUrl)}"><i class="fa-solid fa-file-pdf"></i> ${exportPdfText}</button>
       </div>`
-    : `<div style="font-size:12px;color:var(--text-muted);margin-top:8px;">报告生成后可打开完整报告与导出 PDF</div>`;
+    : `<div style="font-size:12px;color:var(--text-muted);margin-top:8px;">${reportReadyHint}</div>`;
   const reportSection = (reportSummary || reportTitle || reportUrl)
     ? `<div style="margin-top:16px;padding:16px;border:1px solid #dbeafe;border-radius:12px;background:#f8fbff;">
         <div style="font-weight:700;color:#1d4ed8;margin-bottom:8px;">${escapeHtml(reportTitle)}</div>
-        <div style="font-size:13px;line-height:1.6;color:#334155;">${reportSummary ? escapeHtml(reportSummary) : "报告摘要生成中..."}</div>
+        <div style="font-size:13px;line-height:1.6;color:#334155;">${reportSummary ? escapeHtml(reportSummary) : reportSummaryPending}</div>
         ${reportActions}
-        <div style="font-size:12px;color:var(--text-muted);margin-top:8px;">可继续在聊天里追问该报告，或再次发起一键分析。</div>
+        <div style="font-size:12px;color:var(--text-muted);margin-top:8px;">${reportFollowupHint}</div>
       </div>`
     : "";
 
@@ -1397,13 +1517,13 @@ function renderAutoAnalysisCard(wrapper, state) {
 
     <div style="font-size:13px;color:var(--text-muted);margin-bottom:10px;">
 
-      ${escapeHtml(state.status || "正在分析")} ${state.stopReason ? `| 停止原因: ${escapeHtml(state.stopReason)}` : ""}
+      ${escapeHtml(state.status || analyzingText)} ${state.stopReason ? `| ${stopReasonLabel}: ${escapeHtml(formatStopReason(state.stopReason))}` : ""}
 
     </div>
 
   `;
 
-  updateAiCard(wrapper, state.title || "一键分析", `${statusLine}${reportSection}${roundsHtml}`, state.liveThought || null);
+  updateAiCard(wrapper, state.title || (isEn ? "Auto Analyze" : "一键分析"), `${statusLine}${reportSection}${roundsHtml}`, state.liveThought || null);
 
   wrapper.querySelectorAll(".open-report-btn").forEach((btn) => {
     btn.onclick = () => {
@@ -1602,7 +1722,10 @@ async function handleSend(hypothesisId = null) {
 
     const token = localStorage.getItem("token");
 
-    const headers = { "Content-Type": "application/json" };
+    const headers = {
+      "Content-Type": "application/json",
+      "X-Language": i18n.lang || localStorage.getItem("lang") || "zh"
+    };
 
     if (token) headers["Authorization"] = `Bearer ${token}`;
 
@@ -1836,12 +1959,14 @@ async function handleAutoAnalyze() {
   if (directive.model) reqBody.model = directive.model;
 
   const wrapper = createAiMessageContainer();
+  const lang = (window.i18n && i18n.lang) || localStorage.getItem("lang") || "zh";
+  const isEn = lang === "en";
 
   const state = {
 
-    title: "一键分析",
+    title: isEn ? "Auto Analyze" : "一键分析",
 
-    status: "准备开始自动分析",
+    status: isEn ? "Preparing auto analysis" : "准备开始自动分析",
 
     stopReason: "",
 
@@ -1863,7 +1988,10 @@ async function handleAutoAnalyze() {
 
     const token = localStorage.getItem("token");
 
-    const headers = { "Content-Type": "application/json" };
+    const headers = {
+      "Content-Type": "application/json",
+      "X-Language": i18n.lang || localStorage.getItem("lang") || "zh"
+    };
 
     if (token) headers["Authorization"] = `Bearer ${token}`;
 
@@ -1909,14 +2037,22 @@ async function handleAutoAnalyze() {
 
             const data = payload.data || {};
 
-            const phaseMap = {
-              planning: "规划中",
-              thinking: "思考中",
-              report_generating: "报告生成中",
-            };
-            const phase = phaseMap[data.phase] || "处理中";
+            const phaseMap = isEn
+              ? {
+                  planning: "Planning",
+                  thinking: "Thinking",
+                  report_generating: "Generating report",
+                }
+              : {
+                  planning: "规划中",
+                  thinking: "思考中",
+                  report_generating: "报告生成中",
+                };
+            const phase = phaseMap[data.phase] || (isEn ? "Processing" : "处理中");
 
-            state.status = `第 ${data.round || 0} 轮 ${phase}`;
+            state.status = isEn
+              ? `Round ${data.round || 0} ${phase}`
+              : `第 ${data.round || 0} 轮 ${phase}`;
 
             if (data.phase === "thinking") state.liveThought = data.message || "";
             else state.liveThought = "";
@@ -1931,7 +2067,9 @@ async function handleAutoAnalyze() {
 
             state.liveThought = "";
 
-            state.status = `已完成 ${state.rounds.filter(Boolean).length} 轮`;
+            state.status = isEn
+              ? `Completed ${state.rounds.filter(Boolean).length} rounds`
+              : `已完成 ${state.rounds.filter(Boolean).length} 轮`;
 
             renderAutoAnalysisCard(wrapper, state);
 
@@ -1939,13 +2077,13 @@ async function handleAutoAnalyze() {
 
             const data = payload.data || {};
 
-            state.reportTitle = data.title || state.reportTitle || "自动分析报告";
+            state.reportTitle = data.title || state.reportTitle || (isEn ? "Auto Analysis Report" : "自动分析报告");
 
             state.reportSummary = data.summary || state.reportSummary || "";
 
             state.stopReason = data.stop_reason || "";
 
-            state.status = `正在整理最终报告`;
+            state.status = isEn ? "Finalizing report" : "正在整理最终报告";
 
             renderAutoAnalysisCard(wrapper, state);
 
@@ -1959,7 +2097,9 @@ async function handleAutoAnalyze() {
 
             state.stopReason = data.stop_reason || state.stopReason;
 
-            state.status = `已完成 ${data.rounds_completed || state.rounds.length} 轮`;
+            state.status = isEn
+              ? `Completed ${data.rounds_completed || state.rounds.length} rounds`
+              : `已完成 ${data.rounds_completed || state.rounds.length} 轮`;
 
             const reportLang = (window.i18n && i18n.lang) || localStorage.getItem("lang") || "zh";
             const baseUrl = data.report_url || state.reportUrl || "";
@@ -1969,7 +2109,7 @@ async function handleAutoAnalyze() {
                 : `${baseUrl}${baseUrl.includes("?") ? "&" : "?"}lang=${encodeURIComponent(reportLang)}`)
               : "";
 
-            state.reportTitle = data.report_title || state.reportTitle || "自动分析报告";
+            state.reportTitle = data.report_title || state.reportTitle || (isEn ? "Auto Analysis Report" : "自动分析报告");
 
             renderAutoAnalysisCard(wrapper, state);
 
@@ -2168,7 +2308,9 @@ document.getElementById("uploadBtn").onclick = async () => {
 
     const token = localStorage.getItem("token");
 
-    const headers = {};
+    const headers = {
+      "X-Language": i18n.lang || localStorage.getItem("lang") || "zh"
+    };
 
     if (token) headers["Authorization"] = `Bearer ${token}`;
 
@@ -2271,6 +2413,7 @@ closeUploadModalBtn.onclick = () => {
 
 
 const closeSkillModalBtn = document.getElementById("closeSkillModalBtn");
+const jumpSourceSessionBtn = document.getElementById("jumpSourceSessionBtn");
 
 const skillEditCancelLink = document.getElementById("skillEditCancelLink");
 
@@ -2297,6 +2440,28 @@ if (skillEditCancelLink) {
     if (skillModal) skillModal.style.display = "none";
 
     cancelSkillEdit();
+
+  };
+
+}
+
+if (jumpSourceSessionBtn) {
+
+  jumpSourceSessionBtn.onclick = async () => {
+
+    if (!skillSourceSessionId) return;
+
+    if (sessionId === skillSourceSessionId) {
+
+      if (skillModal) skillModal.style.display = "none";
+
+      return;
+
+    }
+
+    if (skillModal) skillModal.style.display = "none";
+
+    await switchSession(skillSourceSessionId);
 
   };
 
@@ -3146,6 +3311,12 @@ refreshSessions();
 normalizeStaticText();
 
 refreshProfile();
+renderSkillContextSnapshot(null);
+
+const initialSessionFromUrl = getSessionIdFromUrl();
+if (initialSessionFromUrl) {
+  switchSession(initialSessionFromUrl);
+}
 
 
 
@@ -3287,15 +3458,16 @@ async function proposeSkillMetadata(proposalId, userMessage) {
 
     if (distilledData.description && descInput) descInput.value = distilledData.description;
 
-    if (distilledData.tags && tagsInput) tagsInput.value = distilledData.tags.join(", ");
+    if (Array.isArray(distilledData.tags) && tagsInput) tagsInput.value = distilledData.tags.join(", ");
 
-    if (distilledData.knowledge && knowledgeInput) knowledgeInput.value = (distilledData.knowledge || []).join("\n");
+    if (Array.isArray(distilledData.knowledge) && knowledgeInput) knowledgeInput.value = distilledData.knowledge.join("\n");
 
 
 
     // Clear skill id to ensure create mode
 
     currentEditingSkillId = "";
+    renderSkillContextSnapshot(distilledData.context_snapshot || null);
 
     
 

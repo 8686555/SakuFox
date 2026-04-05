@@ -308,6 +308,7 @@ class DatabaseStore:
             "ALTER TABLE proposals ADD COLUMN final_report_summary TEXT",
             "ALTER TABLE proposals ADD COLUMN final_report_chart_bindings JSON",
             "ALTER TABLE proposals ADD COLUMN report_meta JSON",
+            "ALTER TABLE proposals ADD COLUMN selected_files JSON",
         ):
             try:
                 with self.engine.begin() as conn:
@@ -727,6 +728,23 @@ class DatabaseStore:
 
 
 
+    def get_session(self, user_id: str, session_id: str) -> dict | None:
+
+        with self.SessionFactory() as sess:
+
+            db_sess = sess.execute(
+
+                select(DBSession).where(DBSession.session_id == session_id, DBSession.user_id == user_id)
+
+            ).scalar_one_or_none()
+
+            if not db_sess:
+
+                return None
+
+            return self._session_to_dict(db_sess, sess)
+
+
     def _iter_to_dict(self, it: DBIteration) -> dict:
 
         return {
@@ -989,6 +1007,8 @@ class DatabaseStore:
 
                 selected_tables=data.get("selected_tables"),
 
+                selected_files=data.get("selected_files"),
+
                 session_patches=data.get("session_patches"),
 
                 loop_rounds=data.get("loop_rounds"),
@@ -1057,6 +1077,8 @@ class DatabaseStore:
 
                     "session_id": p.session_id,
 
+                    "sandbox_id": p.sandbox_id,
+
                     "message": p.message,
 
                     "result_rows": p.result_rows,
@@ -1066,6 +1088,10 @@ class DatabaseStore:
                     "mode": p.mode or "manual",
 
                     "tables": p.tables or [],
+
+                    "selected_tables": p.selected_tables or [],
+
+                    "selected_files": p.selected_files or [],
 
                     "steps": p.steps or [],
 
@@ -1086,6 +1112,8 @@ class DatabaseStore:
                     "report_meta": p.report_meta or {},
 
                     "session_patches": p.session_patches or [],
+
+                    "created_at": p.created_at,
 
                     "sql": "", # Compatibility
 

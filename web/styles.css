@@ -353,6 +353,28 @@ body {
   gap: 6px;
 }
 
+.skill-list-frame {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: #fbfdff;
+  min-height: 180px;
+  height: 320px;
+  max-height: 68vh;
+  overflow-y: auto;
+  resize: vertical;
+  padding: 8px;
+  margin-bottom: 20px;
+}
+
+.skill-list-frame::-webkit-resizer {
+  background:
+    linear-gradient(135deg, transparent 50%, #c7d2fe 50%) no-repeat;
+}
+
+.skill-list-frame .nav-list li {
+  background: #fff;
+}
+
 .nav-list li, .skill-list li {
   padding: 10px 12px;
   border-radius: var(--radius-md);

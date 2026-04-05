@@ -455,11 +455,16 @@ def _build_iteration_user_prompt(
 
             parts.append(val)
 
-
-
-    return "\n".join(parts)
-
-
+    if is_en:
+        parts.append(
+            "- Language requirement: keep JSON keys in English, and keep all narrative values in English "
+            "(conclusions.text, hypotheses.text, action_items, explanation, final_report_outline)."
+        )
+    else:
+        parts.append(
+            "- 输出语言要求：JSON 字段名保持英文，但所有文本内容必须使用简体中文"
+            "（包括 conclusions.text、hypotheses.text、action_items、explanation、final_report_outline）。"
+        )
 
     return "\n".join(parts)
 
@@ -814,10 +819,7 @@ def generate_auto_analysis_report(
     """Build a final business report from completed auto-analysis rounds."""
     config = load_config()
     is_en = get_lang() == "en"
-    """
     report_language = "English" if is_en else "简体中文"
-    """
-    report_language = "English" if is_en else "Simplified Chinese"
     selected_provider = (provider or config.llm_provider).lower()
     if selected_provider not in {"openai", "anthropic"}:
         return _build_fallback_auto_report(message, loop_rounds, stop_reason)
@@ -865,8 +867,7 @@ def generate_auto_analysis_report(
         f"Stop reason:\n{stop_reason}\n\n"
         f"Business knowledge:\n{knowledge_block}\n\n"
         f"Auto-analysis rounds:\n{rounds_summary}\n\n"
-        f"Write all content in {report_language}. "
-        "If target language is Simplified Chinese, translate all section headings as well.\n\n"
+        f"Write all content in {report_language}. Translate all section headings and list items into this language.\n\n"
         "Write the final report in Markdown with exactly these sections (translated when required):\n"
         f"{section_template}"
         "Avoid code unless a very short snippet is necessary."
@@ -894,10 +895,7 @@ def generate_auto_analysis_report_bundle(
     model: str | None = None,
 ) -> dict:
     lang_code = get_lang()
-    """
     report_language = "English" if lang_code == "en" else "简体中文"
-    """
-    report_language = "English" if lang_code == "en" else "Simplified Chinese"
     default_title = "Analysis Report" if lang_code == "en" else "\u5206\u6790\u62a5\u544a"
     fallback_markdown = generate_auto_analysis_report(
         message=message,
@@ -932,12 +930,17 @@ def generate_auto_analysis_report_bundle(
     chart_ids = [f"chart_{idx}" for idx, spec in enumerate(chart_specs[:20], start=1) if isinstance(spec, dict)]
     chart_hint = ", ".join(chart_ids) if chart_ids else "none"
     required_chart_count = min(3, len(chart_ids))
+    default_chart_bindings = [
+        {"chart_id": f"chart_{idx}", "option": spec, "height": 360}
+        for idx, spec in enumerate(chart_specs[:20], start=1)
+        if isinstance(spec, dict)
+    ]
 
     system_prompt = (
         "You are a principal analytics writer. Produce a complete report bundle in JSON. "
         "The html_document must be a full standalone HTML document and may include CSS but no JavaScript."
     )
-    user_prompt = (
+    base_user_prompt = (
         "Return valid JSON only. No markdown fences.\n"
         "Schema:\n"
         "{"
@@ -961,97 +964,204 @@ def generate_auto_analysis_report_bundle(
         f"- REQUIRED: include at least {required_chart_count} chart placeholder nodes when chart ids are available.\n"
         "- chart_bindings should map chart_id to ECharts option and height."
     )
-    chunks = (
-        _call_openai_protocol(system_prompt=system_prompt, user_prompt=user_prompt, model=model, config=config)
-        if selected_provider == "openai"
-        else _call_anthropic_protocol(system_prompt=system_prompt, user_prompt=user_prompt, model=model, config=config)
-    )
-    raw = "".join(chunks).strip()
-    direct_html = _extract_html_document(raw)
-    if direct_html:
-        chart_bindings = [
-            {"chart_id": f"chart_{idx}", "option": spec, "height": 360}
-            for idx, spec in enumerate(chart_specs[:20], start=1)
-            if isinstance(spec, dict)
-        ]
-        html_document = _ensure_chart_placeholders(_sanitize_report_html(direct_html), chart_bindings)
-        return {
-            "title": default_title,
-            "summary": fallback_markdown[:500],
-            "html_document": html_document,
-            "chart_bindings": chart_bindings,
-            "legacy_markdown": fallback_markdown,
-        }
-    parsed = _parse_report_bundle_json(raw)
-    if not parsed:
-        repaired = _repair_report_bundle_json(
-            raw_response=raw,
-            fallback_markdown=fallback_markdown,
-            provider=selected_provider,
-            model=model,
-            config=config,
-            report_language=report_language,
+    max_attempts = 3
+    last_reason = "unknown"
+    for attempt in range(1, max_attempts + 1):
+        retry_hint = ""
+        if attempt > 1:
+            retry_hint = (
+                "\n\nRetry instruction:\n"
+                "The previous output did not contain a qualified standalone HTML document.\n"
+                f"Failure reason: {last_reason}\n"
+                "Fix this and return valid JSON with html_document as a complete HTML page."
+            )
+        user_prompt = base_user_prompt + retry_hint
+        chunks = (
+            _call_openai_protocol(system_prompt=system_prompt, user_prompt=user_prompt, model=model, config=config)
+            if selected_provider == "openai"
+            else _call_anthropic_protocol(system_prompt=system_prompt, user_prompt=user_prompt, model=model, config=config)
         )
-        parsed = _parse_report_bundle_json(repaired) if repaired else None
-    if not parsed:
-        llm_html = _generate_html_document_by_llm(
-            fallback_markdown=fallback_markdown,
-            chart_specs=chart_specs,
-            provider=selected_provider,
-            model=model,
-            config=config,
-            report_language=report_language,
-        )
-        if llm_html:
-            chart_bindings = [
-                {"chart_id": f"chart_{idx}", "option": spec, "height": 360}
-                for idx, spec in enumerate(chart_specs[:20], start=1)
-                if isinstance(spec, dict)
-            ]
-            html_document = _ensure_chart_placeholders(_sanitize_report_html(llm_html), chart_bindings)
-            return {
+        raw = "".join(chunks).strip()
+
+        candidate_bundle: dict | None = None
+        ai_html_source = False
+        ai_html_for_validation = ""
+
+        direct_html = _extract_html_document(raw)
+        if direct_html:
+            ai_html_source = True
+            ai_html_for_validation = direct_html
+            html_document = _ensure_chart_placeholders(_sanitize_report_html(direct_html), default_chart_bindings)
+            candidate_bundle = {
                 "title": default_title,
                 "summary": fallback_markdown[:500],
                 "html_document": html_document,
-                "chart_bindings": chart_bindings,
+                "chart_bindings": default_chart_bindings,
                 "legacy_markdown": fallback_markdown,
             }
-        return fallback_bundle
-    normalized = _normalize_report_bundle(parsed, fallback_bundle, chart_specs)
-    raw_html_field = str(parsed.get("html_document", "") or "")
-    extracted_nested_html = _extract_html_from_json_like_text(raw_html_field)
-    if extracted_nested_html:
-        raw_html_field = extracted_nested_html
-        normalized = _normalize_report_bundle(
-            {**parsed, "html_document": raw_html_field},
-            fallback_bundle,
-            chart_specs,
-        )
-    if _looks_like_json_text(raw_html_field):
-        parsed_nested = _parse_report_bundle_json(raw_html_field)
-        if parsed_nested and parsed_nested.get("html_document"):
-            raw_html_field = str(parsed_nested.get("html_document", ""))
-            normalized = _normalize_report_bundle(
-                {**parsed, "html_document": raw_html_field},
-                fallback_bundle,
-                chart_specs,
+        else:
+            parsed = _parse_report_bundle_json(raw)
+            if not parsed:
+                repaired = _repair_report_bundle_json(
+                    raw_response=raw,
+                    fallback_markdown=fallback_markdown,
+                    provider=selected_provider,
+                    model=model,
+                    config=config,
+                    report_language=report_language,
+                )
+                parsed = _parse_report_bundle_json(repaired) if repaired else None
+
+            if not parsed:
+                llm_html = _generate_html_document_by_llm(
+                    fallback_markdown=fallback_markdown,
+                    chart_specs=chart_specs,
+                    provider=selected_provider,
+                    model=model,
+                    config=config,
+                    report_language=report_language,
+                )
+                if llm_html:
+                    ai_html_source = True
+                    ai_html_for_validation = llm_html
+                    html_document = _ensure_chart_placeholders(_sanitize_report_html(llm_html), default_chart_bindings)
+                    candidate_bundle = {
+                        "title": default_title,
+                        "summary": fallback_markdown[:500],
+                        "html_document": html_document,
+                        "chart_bindings": default_chart_bindings,
+                        "legacy_markdown": fallback_markdown,
+                    }
+            else:
+                normalized = _normalize_report_bundle(parsed, fallback_bundle, chart_specs)
+                raw_html_field = str(parsed.get("html_document", "") or "").strip()
+                extracted_nested_html = _extract_html_from_json_like_text(raw_html_field)
+                if extracted_nested_html:
+                    raw_html_field = extracted_nested_html
+                    normalized = _normalize_report_bundle(
+                        {**parsed, "html_document": raw_html_field},
+                        fallback_bundle,
+                        chart_specs,
+                    )
+                if _looks_like_json_text(raw_html_field):
+                    parsed_nested = _parse_report_bundle_json(raw_html_field)
+                    if parsed_nested and parsed_nested.get("html_document"):
+                        raw_html_field = str(parsed_nested.get("html_document", "") or "").strip()
+                        normalized = _normalize_report_bundle(
+                            {**parsed, "html_document": raw_html_field},
+                            fallback_bundle,
+                            chart_specs,
+                        )
+
+                if raw_html_field:
+                    ai_html_source = True
+                    ai_html_for_validation = raw_html_field
+
+                if _looks_like_markdown_text(raw_html_field):
+                    llm_html = _generate_html_document_by_llm(
+                        fallback_markdown=raw_html_field,
+                        chart_specs=chart_specs,
+                        provider=selected_provider,
+                        model=model,
+                        config=config,
+                        report_language=report_language,
+                    )
+                    if llm_html:
+                        ai_html_source = True
+                        ai_html_for_validation = llm_html
+                        normalized["html_document"] = _sanitize_report_html(llm_html)
+                    else:
+                        ai_html_source = False
+
+                normalized["html_document"] = _ensure_chart_placeholders(
+                    normalized.get("html_document", ""),
+                    normalized.get("chart_bindings", []) or [],
+                )
+                candidate_bundle = normalized
+
+        if ai_html_source and ai_html_for_validation and not _is_standalone_html_document(ai_html_for_validation):
+            upgraded_html = _generate_html_document_by_llm(
+                fallback_markdown=ai_html_for_validation,
+                chart_specs=chart_specs,
+                provider=selected_provider,
+                model=model,
+                config=config,
+                report_language=report_language,
             )
-    if _looks_like_markdown_text(raw_html_field):
-        llm_html = _generate_html_document_by_llm(
-            fallback_markdown=raw_html_field,
-            chart_specs=chart_specs,
-            provider=selected_provider,
-            model=model,
-            config=config,
-            report_language=report_language,
+            if upgraded_html:
+                bindings = []
+                if candidate_bundle and isinstance(candidate_bundle.get("chart_bindings"), list):
+                    bindings = candidate_bundle.get("chart_bindings") or []
+                if not bindings:
+                    bindings = default_chart_bindings
+                if candidate_bundle is None:
+                    candidate_bundle = {
+                        "title": default_title,
+                        "summary": fallback_markdown[:500],
+                        "legacy_markdown": fallback_markdown,
+                        "chart_bindings": bindings,
+                    }
+                candidate_bundle["chart_bindings"] = bindings
+                candidate_bundle["html_document"] = _ensure_chart_placeholders(
+                    _sanitize_report_html(upgraded_html),
+                    bindings,
+                )
+                ai_html_for_validation = upgraded_html
+
+        ok, reason = _is_qualified_ai_report_bundle(
+            candidate_bundle,
+            required_chart_count=required_chart_count,
+            require_ai_html_source=ai_html_source,
+            ai_html_document=ai_html_for_validation,
         )
-        if llm_html:
-            normalized["html_document"] = _sanitize_report_html(llm_html)
-    normalized["html_document"] = _ensure_chart_placeholders(
-        normalized.get("html_document", ""),
-        normalized.get("chart_bindings", []) or [],
+        if ok and candidate_bundle is not None:
+            return candidate_bundle
+        last_reason = reason
+
+    raise RuntimeError(
+        f"AI failed to generate qualified HTML report after {max_attempts} attempts: {last_reason}"
     )
-    return normalized
+
+
+def _is_qualified_ai_report_bundle(
+    bundle: dict | None,
+    required_chart_count: int,
+    require_ai_html_source: bool,
+    ai_html_document: str,
+) -> tuple[bool, str]:
+    if not bundle or not isinstance(bundle, dict):
+        return False, "empty bundle"
+    if not require_ai_html_source:
+        return False, "html_document is not generated from AI output"
+    ai_html_text = str(ai_html_document or "").strip()
+    if not ai_html_text:
+        return False, "AI html output is empty"
+
+    html_document = str(bundle.get("html_document", "") or "").strip()
+    if not html_document:
+        return False, "missing html_document"
+    if not re.search(r"<!doctype html[\s\S]*?</html>|<html[\s\S]*?</html>", html_document, re.IGNORECASE):
+        return False, "html_document is not a standalone HTML document"
+    if "<body" not in html_document.lower():
+        return False, "html_document missing body tag"
+
+    if required_chart_count > 0:
+        placeholder_ids = set(
+            re.findall(r'data-chart-id=["\']([^"\']+)["\']', ai_html_text, flags=re.IGNORECASE)
+        )
+        if len(placeholder_ids) < required_chart_count:
+            return False, f"chart placeholders insufficient: {len(placeholder_ids)} < {required_chart_count}"
+
+    return True, ""
+
+
+def _is_standalone_html_document(text: str) -> bool:
+    html_text = str(text or "").strip()
+    if not html_text:
+        return False
+    if not re.search(r"<!doctype html[\s\S]*?</html>|<html[\s\S]*?</html>", html_text, re.IGNORECASE):
+        return False
+    return "<body" in html_text.lower()
 
 
 def _parse_report_bundle_json(raw: str) -> dict | None:
@@ -1224,13 +1334,50 @@ def _generate_html_document_by_llm(
     )
     html_text = "".join(chunks).strip()
     extracted = _extract_html_document(html_text)
-    return extracted
+    if extracted:
+        return extracted
+
+    fragment = _extract_html_from_json_like_text(html_text) or html_text
+    wrapped = _wrap_html_fragment_as_document(fragment)
+    if wrapped:
+        return wrapped
+    return ""
+
+
+def _wrap_html_fragment_as_document(fragment: str) -> str:
+    text = str(fragment or "").strip()
+    if not text:
+        return ""
+    text = re.sub(r"^```(?:html)?\s*", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\s*```$", "", text, flags=re.IGNORECASE).strip()
+    if not text:
+        return ""
+    if re.search(r"<!doctype html[\s\S]*?</html>|<html[\s\S]*?</html>", text, re.IGNORECASE):
+        return text
+    if not re.search(r"<[a-zA-Z][^>]*>", text):
+        return ""
+
+    body_match = re.search(r"<body[^>]*>([\s\S]*?)</body>", text, re.IGNORECASE)
+    body_content = body_match.group(1).strip() if body_match else text
+    if not body_content:
+        return ""
+
+    html_lang = "en" if get_lang() == "en" else "zh-CN"
+    report_title = "Analysis Report" if get_lang() == "en" else "分析报告"
+    return (
+        f"<!doctype html><html lang=\"{html_lang}\"><head><meta charset=\"UTF-8\"/>"
+        "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\"/>"
+        f"<title>{html.escape(report_title)}</title></head><body>{body_content}</body></html>"
+    )
 
 
 def _ensure_chart_placeholders(html_document: str, chart_bindings: list[dict]) -> str:
     html_text = str(html_document or "")
     if not html_text or not chart_bindings:
         return html_text
+    is_en = get_lang() == "en"
+    chart_label = "Chart" if is_en else "图表"
+    charts_label = "Charts" if is_en else "图表"
     existing_ids = set(re.findall(r'data-chart-id=["\']([^"\']+)["\']', html_text, flags=re.IGNORECASE))
     missing_ids = [
         str(item.get("chart_id", "")).strip()
@@ -1242,7 +1389,7 @@ def _ensure_chart_placeholders(html_document: str, chart_bindings: list[dict]) -
     section_items = "".join(
         (
             f'<section style="margin-top:18px;">'
-            f'<h3 style="margin:0 0 8px;">Chart {idx}</h3>'
+            f'<h3 style="margin:0 0 8px;">{chart_label} {idx}</h3>'
             f'<div data-chart-id="{html.escape(chart_id)}"></div>'
             f"</section>"
         )
@@ -1250,7 +1397,7 @@ def _ensure_chart_placeholders(html_document: str, chart_bindings: list[dict]) -
     )
     chart_section = (
         '<section style="margin-top:22px;">'
-        '<h2 style="margin:0 0 10px;">Charts</h2>'
+        f'<h2 style="margin:0 0 10px;">{charts_label}</h2>'
         f"{section_items}"
         "</section>"
     )
@@ -1260,15 +1407,27 @@ def _ensure_chart_placeholders(html_document: str, chart_bindings: list[dict]) -
 
 
 def _normalize_report_bundle(bundle: dict, fallback_bundle: dict, chart_specs: list[dict]) -> dict:
+    is_en = get_lang() == "en"
+    html_lang = "en" if is_en else "zh-CN"
     title = str(bundle.get("title", "") or "").strip() or str(fallback_bundle.get("title", "Auto Analysis Report"))
     summary = str(bundle.get("summary", "") or "").strip() or str(fallback_bundle.get("summary", ""))
     raw_html = str(bundle.get("html_document", "") or "").strip()
-    html_document = _sanitize_report_html(raw_html) if raw_html else str(fallback_bundle.get("html_document", ""))
+    html_document = ""
+    if raw_html:
+        extracted_html = _extract_html_document(raw_html)
+        if extracted_html:
+            html_document = _sanitize_report_html(extracted_html)
+        elif _looks_like_markdown_text(raw_html):
+            html_document = _markdown_to_basic_html(raw_html)
+        else:
+            html_document = _sanitize_report_html(raw_html)
+    if not html_document:
+        html_document = str(fallback_bundle.get("html_document", ""))
     if not html_document:
         html_document = _markdown_to_basic_html(str(fallback_bundle.get("legacy_markdown", "") or ""))
     if "<html" not in html_document.lower():
         html_document = (
-            "<!doctype html><html lang=\"en\"><head><meta charset=\"UTF-8\"/>"
+            f"<!doctype html><html lang=\"{html_lang}\"><head><meta charset=\"UTF-8\"/>"
             "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\"/>"
             f"<title>{html.escape(title)}</title></head><body>{html_document}</body></html>"
         )
@@ -1311,13 +1470,15 @@ def _normalize_report_bundle(bundle: dict, fallback_bundle: dict, chart_specs: l
 
 def _build_fallback_report_bundle(markdown_text: str, chart_specs: list[dict]) -> dict:
     safe_markdown = str(markdown_text or "").strip()
+    is_en = get_lang() == "en"
+    chart_label = "Chart" if is_en else "图表"
     chart_bindings = [
         {"chart_id": f"chart_{idx}", "option": spec, "height": 360}
         for idx, spec in enumerate(chart_specs[:20], start=1)
         if isinstance(spec, dict)
     ]
     chart_slots = "".join(
-        f'<section style="margin-top:20px;"><h2 style="margin:0 0 8px;">Chart {idx}</h2><div data-chart-id="chart_{idx}"></div></section>'
+        f'<section style="margin-top:20px;"><h2 style="margin:0 0 8px;">{chart_label} {idx}</h2><div data-chart-id="chart_{idx}"></div></section>'
         for idx, _ in enumerate(chart_bindings, start=1)
     )
     html_document = _markdown_to_basic_html(safe_markdown, chart_slots)
@@ -1331,11 +1492,14 @@ def _build_fallback_report_bundle(markdown_text: str, chart_specs: list[dict]) -
 
 
 def _markdown_to_basic_html(markdown_text: str, extra_blocks: str = "") -> str:
+    is_en = get_lang() == "en"
+    html_lang = "en" if is_en else "zh-CN"
+    report_title = "Auto Analysis Report" if is_en else "自动分析报告"
     rendered = _render_markdown_like_html(markdown_text)
     return (
-        "<!doctype html><html lang=\"en\"><head><meta charset=\"UTF-8\"/>"
+        f"<!doctype html><html lang=\"{html_lang}\"><head><meta charset=\"UTF-8\"/>"
         "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\"/>"
-        "<title>Auto Analysis Report</title>"
+        f"<title>{report_title}</title>"
         "<style>body{font-family:Inter,Arial,sans-serif;margin:0;background:#f8fafc;color:#0f172a}"
         ".paper{max-width:1080px;margin:24px auto;padding:28px;background:#fff;border:1px solid #e2e8f0;border-radius:14px}"
         ".content{font-size:14px;line-height:1.7}"
@@ -1347,7 +1511,7 @@ def _markdown_to_basic_html(markdown_text: str, extra_blocks: str = "") -> str:
         ".content hr{border:none;border-top:1px solid #e2e8f0;margin:18px 0}"
         "@media print{body{background:#fff}.paper{border:none;max-width:none;margin:0;padding:0}}</style>"
         "</head><body><main class=\"paper\">"
-        "<h1 style=\"margin-top:0;\">Auto Analysis Report</h1>"
+        f"<h1 style=\"margin-top:0;\">{report_title}</h1>"
         f"<div class=\"content\">{rendered}</div>"
         f"{extra_blocks}"
         "</main></body></html>"

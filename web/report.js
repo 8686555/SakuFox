@@ -63,12 +63,17 @@
     const text = String(rawText || "").trim();
     if (!text) return "";
     const stripFence = text.replace(/^```(?:json|html)?\s*/i, "").replace(/\s*```$/i, "").trim();
+    const extractStandaloneHtml = (candidate) => {
+      const match = String(candidate || "").match(/<!doctype html[\s\S]*?<\/html>|<html[\s\S]*?<\/html>/i);
+      return match ? match[0].trim() : "";
+    };
 
     const tryParse = (candidate) => {
       try {
         const parsed = JSON.parse(candidate);
         if (parsed && typeof parsed === "object" && typeof parsed.html_document === "string") {
-          return parsed.html_document.trim();
+          const rawHtml = parsed.html_document.trim();
+          return extractStandaloneHtml(rawHtml) || rawHtml;
         }
       } catch (_) {
         // ignore
@@ -86,30 +91,43 @@
       if (html) return html;
     }
 
-    const htmlField = stripFence.match(/"html_document"\s*:\s*"([\s\S]*?)"\s*(?:,\s*"chart_bindings"|,\s*"summary"|,\s*"title"|\})/i);
+    const htmlField = stripFence.match(/"html_document"\s*:\s*"([\s\S]*?)"\s*(?:,\s*"chart_bindings"|,\s*"summary"|,\s*"title"|,\s*"legacy_markdown"|\})/i);
     if (htmlField && htmlField[1]) {
       try {
-        return JSON.parse(`"${htmlField[1]}"`).trim();
+        const rawHtml = JSON.parse(`"${htmlField[1]}"`).trim();
+        return extractStandaloneHtml(rawHtml) || rawHtml;
       } catch (_) {
-        return htmlField[1].trim();
+        const rawHtml = htmlField[1].trim();
+        return extractStandaloneHtml(rawHtml) || rawHtml;
       }
     }
 
-    const htmlBlock = stripFence.match(/<!doctype html[\s\S]*<\/html>|<html[\s\S]*<\/html>/i);
+    const htmlBlock = stripFence.match(/<!doctype html[\s\S]*?<\/html>|<html[\s\S]*?<\/html>/i);
     if (htmlBlock) return htmlBlock[0].trim();
 
     return "";
   }
 
+  function escapeText(text) {
+    return String(text || "")
+      .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;");
+  }
+
   function normalizeHtmlDocument(rawText) {
     const text = String(rawText || "").trim();
     if (!text) return "";
-    if (/<html[\s\S]*<\/html>/i.test(text) || /<!doctype html[\s\S]*<\/html>/i.test(text)) {
-      return text;
-    }
+
     const extracted = extractHtmlFromJsonLike(text);
     if (extracted) return extracted;
-    return text;
+
+    const htmlBlock = text.match(/<!doctype html[\s\S]*?<\/html>|<html[\s\S]*?<\/html>/i);
+    if (htmlBlock) return htmlBlock[0].trim();
+
+    if (text.startsWith("{") || text.startsWith("[")) return "";
+
+    return `<!doctype html><html lang="zh-CN"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/><title>Report</title><style>body{font-family:Arial,sans-serif;margin:24px;color:#111827;background:#fff;}pre{white-space:pre-wrap;line-height:1.6;}</style></head><body><pre>${escapeText(text)}</pre></body></html>`;
   }
 
   async function fetchReport(iterationId, lang) {

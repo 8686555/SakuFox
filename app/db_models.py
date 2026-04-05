@@ -115,6 +115,7 @@ class DBProposal(Base):
     result_rows = Column(JSON)
     chart_specs = Column(JSON)
     selected_tables = Column(JSON)
+    selected_files = Column(JSON)
     session_patches = Column(JSON)
     loop_rounds = Column(JSON)
     final_report_md = Column(Text)

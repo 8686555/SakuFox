@@ -1,6 +1,7 @@
 import html
 import json
 import io
+import re
 import uuid
 from pathlib import Path
 
@@ -45,7 +46,7 @@ from app.models import (
     MountSkillsRequest,
 )
 from app.python_sandbox import run_python_pipeline
-from app.skills import list_skills, save_skill_from_proposal
+from app.skills import list_skills, save_skill_from_proposal, build_context_snapshot_for_proposal
 from app.tools import execute_select_sql_with_mask
 from app.store import User, store
 
@@ -118,31 +119,52 @@ def _build_iteration_message(
     round_index: int,
     previous_round: dict | None = None,
 ) -> str:
+    is_en = get_lang() == "en"
     if round_index <= 1 or previous_round is None:
+        if is_en:
+            return (
+                f"{original_message}\n\n"
+                "You are in one-click auto-analysis mode. If you still need SQL or Python tools, output steps. "
+                "If no more tool use is needed, output empty steps and provide final conclusions, action items, and a report outline. "
+                "Keep all narrative fields in English."
+            )
         return (
             f"{original_message}\n\n"
-            "You are in one-click auto-analysis mode. If you still need SQL or Python tools, output steps. "
-            "If no more tool use is needed, output empty steps and provide final conclusions, action items, and a report outline."
+            "你处于一键自动分析模式。如果还需要 SQL 或 Python 工具，请继续输出 steps。"
+            "如果不再需要工具调用，请输出空 steps，并给出最终结论、行动建议和报告提纲。"
+            "JSON 的字段名保持英文，但所有结论与说明文本必须使用简体中文。"
         )
 
     result = previous_round.get("result") or {}
     execution = previous_round.get("execution") or {}
+    no_data_label = "none" if is_en else "无"
     conclusions = "; ".join(
         str(item.get("text", "")).strip()
         for item in (result.get("conclusions") or [])[:5]
         if isinstance(item, dict) and str(item.get("text", "")).strip()
-    ) or "none"
-    actions = "; ".join(str(item).strip() for item in (result.get("action_items") or [])[:5] if str(item).strip()) or "none"
+    ) or no_data_label
+    actions = "; ".join(str(item).strip() for item in (result.get("action_items") or [])[:5] if str(item).strip()) or no_data_label
     rows_count = len(execution.get("rows") or [])
     charts_count = len(execution.get("chart_specs") or [])
-    error_text = execution.get("error") or previous_round.get("error") or "none"
+    error_text = execution.get("error") or previous_round.get("error") or no_data_label
+    if is_en:
+        return (
+            f"{original_message}\n\n"
+            f"This is auto-analysis round {round_index}. Continue from the previous round.\n"
+            f"Previous conclusions: {conclusions}\n"
+            f"Previous actions: {actions}\n"
+            f"Previous result rows: {rows_count}; charts: {charts_count}; error: {error_text}\n"
+            "If more tool calls are needed, keep outputting SQL/Python steps. If analysis is sufficient, output empty steps and finalize the conclusions. "
+            "Keep all narrative fields in English."
+        )
     return (
         f"{original_message}\n\n"
-        f"This is auto-analysis round {round_index}. Continue from the previous round.\n"
-        f"Previous conclusions: {conclusions}\n"
-        f"Previous actions: {actions}\n"
-        f"Previous result rows: {rows_count}; charts: {charts_count}; error: {error_text}\n"
-        "If more tool calls are needed, keep outputting SQL/Python steps. If analysis is sufficient, output empty steps and finalize the conclusions."
+        f"当前是一键自动分析第 {round_index} 轮，请延续上一轮继续分析。\n"
+        f"上一轮结论：{conclusions}\n"
+        f"上一轮行动建议：{actions}\n"
+        f"上一轮结果行数：{rows_count}；图表数：{charts_count}；错误：{error_text}\n"
+        "如果还需要工具调用，请继续输出 SQL/Python steps；如果分析已充分，请输出空 steps 并收敛为最终结论。"
+        "JSON 的字段名保持英文，但所有结论与说明文本必须使用简体中文。"
     )
 
 
@@ -182,13 +204,21 @@ def _build_iteration_context_history(iterations: list[dict]) -> list[dict]:
 
 
 def _build_default_auto_seed_message(selected_tables: list[str], selected_files: list[str]) -> str:
-    table_text = ", ".join(selected_tables[:8]) if selected_tables else "current sandbox tables"
-    file_text = ", ".join(selected_files[:8]) if selected_files else "selected uploaded files if available"
+    is_en = get_lang() == "en"
+    table_text = ", ".join(selected_tables[:8]) if selected_tables else ("current sandbox tables" if is_en else "当前沙盒可用表")
+    file_text = ", ".join(selected_files[:8]) if selected_files else ("selected uploaded files if available" if is_en else "已选择的上传文件")
+    if is_en:
+        return (
+            "Run one-click autonomous analysis for the currently selected data assets. "
+            "Start with data profiling and quality checks, then detect anomalies and latent patterns, "
+            "validate key findings with SQL/Python evidence, and conclude with prioritized actionable recommendations. "
+            f"Priority tables: {table_text}. Priority files: {file_text}."
+        )
     return (
-        "Run one-click autonomous analysis for the currently selected data assets. "
-        "Start with data profiling and quality checks, then detect anomalies and latent patterns, "
-        "validate key findings with SQL/Python evidence, and conclude with prioritized actionable recommendations. "
-        f"Priority tables: {table_text}. Priority files: {file_text}."
+        "请对当前选中的数据资产执行一键自动分析："
+        "先做数据概览与质量评估，再识别异常与潜在模式，"
+        "用 SQL/Python 证据验证关键发现，最后给出可执行且有优先级的行动建议。"
+        f"优先表：{table_text}。优先文件：{file_text}。"
     )
 
 
@@ -196,29 +226,51 @@ def _build_iteration_report_url(iteration_id: str) -> str:
     return f"/web/report.html?iteration_id={iteration_id}"
 
 
+def _localize_html_bundle_runtime_error(raw_message: str) -> str:
+    text = str(raw_message or "")
+    if text.startswith("AI failed to generate qualified HTML report after"):
+        if get_lang() == "en":
+            return (
+                "AI failed to generate a qualified HTML report after 3 retries. "
+                "Try refining your request context and run one-click analysis again."
+            )
+        return "AI 连续 3 次都未生成合格的 HTML 报告，请补充更明确的上下文后重试。"
+    return text
+
+
 def _build_report_bundle_from_markdown(markdown_text: str, chart_specs: list[dict]) -> dict:
-    default_title = "Analysis Report" if get_lang() == "en" else "分析报告"
+    is_en = get_lang() == "en"
+    default_title = "Analysis Report" if is_en else "分析报告"
+    html_lang = "en" if is_en else "zh-CN"
+    chart_title = "Chart" if is_en else "图表"
     safe_md = str(markdown_text or "").strip()
-    escaped = html.escape(safe_md).replace("\n", "<br/>")
+    rendered = _render_markdown_like_html(safe_md)
     chart_bindings = [
         {"chart_id": f"chart_{idx}", "option": spec, "height": 360}
         for idx, spec in enumerate(chart_specs[:20], start=1)
         if isinstance(spec, dict)
     ]
     chart_slots = "".join(
-        f'<section style="margin-top:18px;"><h2 style="margin:0 0 8px;">Chart {idx}</h2><div data-chart-id="chart_{idx}"></div></section>'
+        f'<section style="margin-top:18px;"><h2 style="margin:0 0 8px;">{chart_title} {idx}</h2><div data-chart-id="chart_{idx}"></div></section>'
         for idx, _ in enumerate(chart_bindings, start=1)
     )
     html_doc = (
-        "<!doctype html><html lang=\"en\"><head><meta charset=\"UTF-8\"/>"
+        f"<!doctype html><html lang=\"{html_lang}\"><head><meta charset=\"UTF-8\"/>"
         "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\"/>"
         f"<title>{html.escape(default_title)}</title>"
         "<style>body{font-family:Inter,Arial,sans-serif;margin:0;background:#f8fafc;color:#0f172a}"
         ".paper{max-width:1080px;margin:24px auto;padding:28px;background:#fff;border:1px solid #e2e8f0;border-radius:14px}"
+        ".content{font-size:14px;line-height:1.7}"
+        ".content h1,.content h2,.content h3{margin:18px 0 10px;line-height:1.35}"
+        ".content p{margin:10px 0}"
+        ".content ul,.content ol{margin:8px 0 12px 22px}"
+        ".content li{margin:4px 0}"
+        ".content code{padding:1px 5px;border-radius:4px;background:#e2e8f0;font-family:Consolas,monospace}"
+        ".content hr{border:none;border-top:1px solid #e2e8f0;margin:18px 0}"
         "@media print{body{background:#fff}.paper{border:none;max-width:none;margin:0;padding:0}}</style>"
         "</head><body><main class=\"paper\">"
         f"<h1>{html.escape(default_title)}</h1>"
-        f"<div>{escaped}</div>"
+        f"<div class=\"content\">{rendered}</div>"
         f"{chart_slots}"
         "</main></body></html>"
     )
@@ -229,6 +281,276 @@ def _build_report_bundle_from_markdown(markdown_text: str, chart_specs: list[dic
         "chart_bindings": chart_bindings,
         "legacy_markdown": safe_md,
     }
+
+
+def _render_markdown_like_html(markdown_text: str) -> str:
+    def inline_render(text: str) -> str:
+        escaped = html.escape(text)
+        escaped = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", escaped)
+        escaped = re.sub(r"`([^`]+)`", r"<code>\1</code>", escaped)
+        return escaped
+
+    lines = str(markdown_text or "").splitlines()
+    out: list[str] = []
+    list_mode: str | None = None
+
+    def close_list() -> None:
+        nonlocal list_mode
+        if list_mode == "ul":
+            out.append("</ul>")
+        elif list_mode == "ol":
+            out.append("</ol>")
+        list_mode = None
+
+    for raw in lines:
+        line = raw.rstrip()
+        stripped = line.strip()
+        if not stripped:
+            close_list()
+            continue
+        if stripped == "---":
+            close_list()
+            out.append("<hr/>")
+            continue
+        if stripped.startswith("### "):
+            close_list()
+            out.append(f"<h3>{inline_render(stripped[4:])}</h3>")
+            continue
+        if stripped.startswith("## "):
+            close_list()
+            out.append(f"<h2>{inline_render(stripped[3:])}</h2>")
+            continue
+        if stripped.startswith("# "):
+            close_list()
+            out.append(f"<h1>{inline_render(stripped[2:])}</h1>")
+            continue
+        if re.match(r"^\d+\.\s+", stripped):
+            if list_mode != "ol":
+                close_list()
+                out.append("<ol>")
+                list_mode = "ol"
+            item = re.sub(r"^\d+\.\s+", "", stripped)
+            out.append(f"<li>{inline_render(item)}</li>")
+            continue
+        if stripped.startswith("- "):
+            if list_mode != "ul":
+                close_list()
+                out.append("<ul>")
+                list_mode = "ul"
+            out.append(f"<li>{inline_render(stripped[2:])}</li>")
+            continue
+        close_list()
+        out.append(f"<p>{inline_render(stripped)}</p>")
+
+    close_list()
+    return "\n".join(out)
+
+
+def _extract_html_document_from_report_text(raw_text: str) -> str:
+    text = str(raw_text or "").strip()
+    if not text:
+        return ""
+    normalized = re.sub(r"^```(?:json|html)?\s*", "", text, flags=re.IGNORECASE)
+    normalized = re.sub(r"\s*```$", "", normalized, flags=re.IGNORECASE).strip()
+
+    def parse_candidate(candidate: str) -> str:
+        try:
+            parsed = json.loads(candidate)
+        except json.JSONDecodeError:
+            return ""
+        if not isinstance(parsed, dict):
+            return ""
+        html_doc = str(parsed.get("html_document", "") or "").strip()
+        if not html_doc:
+            return ""
+        match = re.search(r"<!doctype html[\s\S]*?</html>|<html[\s\S]*?</html>", html_doc, flags=re.IGNORECASE)
+        return (match.group(0) if match else html_doc).strip()
+
+    parsed_html = parse_candidate(normalized)
+    if parsed_html:
+        return parsed_html
+
+    first_brace = normalized.find("{")
+    last_brace = normalized.rfind("}")
+    if first_brace >= 0 and last_brace > first_brace:
+        parsed_html = parse_candidate(normalized[first_brace:last_brace + 1])
+        if parsed_html:
+            return parsed_html
+
+    field_match = re.search(
+        r'"html_document"\s*:\s*"([\s\S]*?)"\s*(?:,\s*"chart_bindings"|,\s*"summary"|,\s*"title"|,\s*"legacy_markdown"|\})',
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    if field_match:
+        raw_value = field_match.group(1)
+        try:
+            decoded = json.loads(f'"{raw_value}"')
+        except json.JSONDecodeError:
+            decoded = raw_value
+        decoded_text = str(decoded).strip()
+        match = re.search(r"<!doctype html[\s\S]*?</html>|<html[\s\S]*?</html>", decoded_text, flags=re.IGNORECASE)
+        if match:
+            return match.group(0).strip()
+
+    html_match = re.search(r"<!doctype html[\s\S]*?</html>|<html[\s\S]*?</html>", normalized, flags=re.IGNORECASE)
+    if html_match:
+        return html_match.group(0).strip()
+    return ""
+
+
+def _normalize_auto_report_bundle(report_bundle: dict, chart_specs: list[dict]) -> dict:
+    normalized = dict(report_bundle or {})
+    raw_html = str(normalized.get("html_document", "") or "").strip()
+    html_document = _extract_html_document_from_report_text(raw_html)
+
+    fallback_markdown = str(normalized.get("legacy_markdown", "") or "").strip()
+    if not fallback_markdown and raw_html and "<html" not in raw_html.lower():
+        fallback_markdown = raw_html
+    if not fallback_markdown:
+        fallback_markdown = str(normalized.get("summary", "") or "").strip()
+    fallback_bundle = _build_report_bundle_from_markdown(fallback_markdown, chart_specs)
+
+    if not html_document:
+        html_document = str(fallback_bundle.get("html_document", "") or "")
+    if "<html" not in html_document.lower():
+        html_document = str(fallback_bundle.get("html_document", "") or "")
+
+    normalized["html_document"] = html_document
+    normalized["title"] = str(normalized.get("title", "") or str(fallback_bundle.get("title", "")))
+    normalized["summary"] = str(normalized.get("summary", "") or str(fallback_bundle.get("summary", "")))[:500]
+    normalized["legacy_markdown"] = str(normalized.get("legacy_markdown", "") or str(fallback_bundle.get("legacy_markdown", "")))
+    chart_bindings = normalized.get("chart_bindings")
+    if not isinstance(chart_bindings, list):
+        chart_bindings = list(fallback_bundle.get("chart_bindings", []))
+    normalized["chart_bindings"] = chart_bindings
+    normalized["html_document"] = _ensure_chart_placeholders_in_report_html(normalized["html_document"], chart_bindings)
+    return normalized
+
+
+def _ensure_chart_placeholders_in_report_html(html_document: str, chart_bindings: list[dict]) -> str:
+    html_text = str(html_document or "")
+    if not html_text or not chart_bindings:
+        return html_text
+    existing_ids = set(re.findall(r'data-chart-id=["\']([^"\']+)["\']', html_text, flags=re.IGNORECASE))
+    missing_ids = [
+        str(item.get("chart_id", "")).strip()
+        for item in chart_bindings
+        if isinstance(item, dict)
+        and str(item.get("chart_id", "")).strip()
+        and str(item.get("chart_id", "")).strip() not in existing_ids
+    ]
+    if not missing_ids:
+        return html_text
+
+    is_en = get_lang() == "en"
+    chart_label = "Chart" if is_en else "图表"
+    charts_label = "Charts" if is_en else "图表"
+    section_items = "".join(
+        (
+            f'<section style="margin-top:18px;">'
+            f'<h3 style="margin:0 0 8px;">{chart_label} {idx}</h3>'
+            f'<div data-chart-id="{html.escape(chart_id)}"></div>'
+            "</section>"
+        )
+        for idx, chart_id in enumerate(missing_ids, start=1)
+    )
+    chart_section = (
+        '<section style="margin-top:22px;">'
+        f'<h2 style="margin:0 0 10px;">{charts_label}</h2>'
+        f"{section_items}"
+        "</section>"
+    )
+    if "</body>" in html_text.lower():
+        return re.sub(r"</body>", chart_section + "</body>", html_text, count=1, flags=re.IGNORECASE)
+    return html_text + chart_section
+
+
+def _build_skill_proposal_fallback(
+    proposal: dict,
+    requested_message: str,
+    sandbox_name: str,
+    suggestion: dict,
+) -> dict:
+    is_en = get_lang() == "en"
+    sanitized = suggestion if isinstance(suggestion, dict) else {}
+    output = {
+        "name": str(sanitized.get("name") or "").strip(),
+        "description": str(sanitized.get("description") or "").strip(),
+        "tags": sanitized.get("tags") if isinstance(sanitized.get("tags"), list) else [],
+        "knowledge": sanitized.get("knowledge") if isinstance(sanitized.get("knowledge"), list) else [],
+    }
+
+    message = str(requested_message or proposal.get("message") or "").strip()
+    report_title = str(proposal.get("report_title") or "").strip()
+    report_summary = str(proposal.get("final_report_summary") or "").strip()
+    explanation = str(proposal.get("explanation") or "").strip()
+    final_report_md = str(proposal.get("final_report_md") or "").strip()
+
+    if not output["name"]:
+        if report_title:
+            output["name"] = report_title[:80]
+        elif message:
+            output["name"] = message[:50]
+        else:
+            output["name"] = "Auto Analysis Skill" if is_en else "自动分析经验"
+
+    if not output["description"]:
+        base_desc = report_summary or explanation or final_report_md[:500]
+        if base_desc:
+            output["description"] = base_desc
+        else:
+            output["description"] = (
+                f"Reusable analysis skill distilled from sandbox {sandbox_name}."
+                if is_en
+                else f"从沙盒「{sandbox_name}」提炼的可复用分析经验。"
+            )
+
+    if not output["tags"]:
+        tags: list[str] = []
+        for table_name in (proposal.get("selected_tables") or []):
+            text = str(table_name).strip()
+            if text and text not in tags:
+                tags.append(text)
+            if len(tags) >= 4:
+                break
+        mode = str(proposal.get("mode") or "").strip()
+        if mode and mode not in tags:
+            tags.append(mode)
+        output["tags"] = tags
+
+    if not output["knowledge"]:
+        knowledge_lines: list[str] = []
+        for item in (proposal.get("conclusions") or [])[:5]:
+            if isinstance(item, dict):
+                text = str(item.get("text") or "").strip()
+            else:
+                text = str(item or "").strip()
+            if text:
+                knowledge_lines.append(text)
+        for item in (proposal.get("action_items") or [])[:5]:
+            text = str(item or "").strip()
+            if text:
+                knowledge_lines.append(text)
+        if report_summary:
+            knowledge_lines.append(report_summary)
+        if not knowledge_lines and final_report_md:
+            for line in final_report_md.splitlines():
+                text = str(line).strip(" -#\t")
+                if text:
+                    knowledge_lines.append(text)
+                if len(knowledge_lines) >= 8:
+                    break
+        deduped: list[str] = []
+        seen: set[str] = set()
+        for line in knowledge_lines:
+            if line in seen:
+                continue
+            seen.add(line)
+            deduped.append(line)
+        output["knowledge"] = deduped
+
+    return output
 
 
 def _build_bootstrap_auto_steps(selected_tables: list[str], selected_files: list[str]) -> list[dict]:
@@ -546,6 +868,7 @@ def iterate(req: IterateRequest, user: User = Depends(get_current_user)):
                     "result_rows": exec_result["rows"],
                     "chart_specs": exec_result.get("chart_specs", []),
                     "selected_tables": selected_tables,
+                    "selected_files": req.selected_files or [],
                     "session_patches": list(session.get("patches", [])),
                     "loop_rounds": [],
                     "final_report_md": "",
@@ -568,7 +891,8 @@ def iterate(req: IterateRequest, user: User = Depends(get_current_user)):
                 }, ensure_ascii=False) + "\n"
 
         except RuntimeError as exc:
-            yield json.dumps({"type": "error", "message": str(exc)}, ensure_ascii=False) + "\n"
+            localized_error = _localize_html_bundle_runtime_error(str(exc))
+            yield json.dumps({"type": "error", "message": localized_error}, ensure_ascii=False) + "\n"
         except Exception as exc:
             internal_error = t("error_internal", default="服务器内部错误")
             yield json.dumps({"type": "error", "message": f"{internal_error}: {str(exc)}"}, ensure_ascii=False) + "\n"
@@ -645,7 +969,11 @@ def auto_analyze(req: AutoAnalyzeRequest, user: User = Depends(get_current_user)
                     "data": {
                         "round": round_index,
                         "phase": "planning",
-                        "message": f"starting round {round_index}",
+                        "message": (
+                            f"starting round {round_index}"
+                            if get_lang() == "en"
+                            else f"开始第 {round_index} 轮分析"
+                        ),
                     },
                 }, ensure_ascii=False) + "\n"
 
@@ -731,7 +1059,11 @@ def auto_analyze(req: AutoAnalyzeRequest, user: User = Depends(get_current_user)
                         "data": {
                             "round": round_index,
                             "phase": "report_generating",
-                            "message": "final report is being generated",
+                            "message": (
+                                "final report is being generated"
+                                if get_lang() == "en"
+                                else "正在生成最终报告"
+                            ),
                         },
                     }, ensure_ascii=False) + "\n"
                     break
@@ -742,7 +1074,11 @@ def auto_analyze(req: AutoAnalyzeRequest, user: User = Depends(get_current_user)
                         "data": {
                             "round": round_index,
                             "phase": "report_generating",
-                            "message": "final report is being generated",
+                            "message": (
+                                "final report is being generated"
+                                if get_lang() == "en"
+                                else "正在生成最终报告"
+                            ),
                         },
                     }, ensure_ascii=False) + "\n"
                     break
@@ -778,6 +1114,7 @@ def auto_analyze(req: AutoAnalyzeRequest, user: User = Depends(get_current_user)
                     report_bundle.get("legacy_markdown", ""),
                     chart_specs,
                 )
+            report_bundle = _normalize_auto_report_bundle(report_bundle, chart_specs)
             yield json.dumps({
                 "type": "report",
                 "data": {
@@ -817,6 +1154,7 @@ def auto_analyze(req: AutoAnalyzeRequest, user: User = Depends(get_current_user)
                 "result_rows": _get_last_result_rows(loop_rounds),
                 "chart_specs": iteration_payload.get("chart_specs", []),
                 "selected_tables": selected_tables,
+                "selected_files": selected_files,
                 "session_patches": list(session.get("patches", [])),
                 "loop_rounds": loop_rounds,
                 "final_report_md": iteration_payload.get("final_report_md", ""),
@@ -842,7 +1180,8 @@ def auto_analyze(req: AutoAnalyzeRequest, user: User = Depends(get_current_user)
                 },
             }, ensure_ascii=False) + "\n"
         except RuntimeError as exc:
-            yield json.dumps({"type": "error", "message": str(exc)}, ensure_ascii=False) + "\n"
+            localized_error = _localize_html_bundle_runtime_error(str(exc))
+            yield json.dumps({"type": "error", "message": localized_error}, ensure_ascii=False) + "\n"
         except Exception as exc:
             internal_error = t("error_internal", default="服务端内部错误")
             yield json.dumps({"type": "error", "message": f"{internal_error}: {str(exc)}"}, ensure_ascii=False) + "\n"
@@ -885,13 +1224,23 @@ def get_iteration_report(iteration_id: str, user: User = Depends(get_current_use
         raise HTTPException(status_code=404, detail="iteration not found")
     if (iteration.get("mode") or "") != "auto_analysis":
         raise HTTPException(status_code=400, detail="iteration is not an auto-analysis report")
+    normalized_report = _normalize_auto_report_bundle(
+        {
+            "title": iteration.get("report_title", ""),
+            "summary": iteration.get("final_report_summary", ""),
+            "html_document": iteration.get("final_report_html", ""),
+            "chart_bindings": iteration.get("final_report_chart_bindings", []),
+            "legacy_markdown": iteration.get("final_report_md", ""),
+        },
+        chart_specs=[],
+    )
     return {
         "iteration_id": iteration.get("iteration_id"),
         "session_id": iteration.get("session_id"),
-        "report_title": iteration.get("report_title", ""),
-        "final_report_html": iteration.get("final_report_html", ""),
-        "final_report_summary": iteration.get("final_report_summary", ""),
-        "final_report_chart_bindings": iteration.get("final_report_chart_bindings", []),
+        "report_title": normalized_report.get("title", ""),
+        "final_report_html": normalized_report.get("html_document", ""),
+        "final_report_summary": normalized_report.get("summary", ""),
+        "final_report_chart_bindings": normalized_report.get("chart_bindings", []),
         "report_meta": iteration.get("report_meta", {}),
         "created_at": iteration.get("created_at"),
     }
@@ -1043,20 +1392,33 @@ def propose_skill(req: ProposeSkillRequest, user: User = Depends(get_current_use
     proposal = store.proposals.get(req.proposal_id)
     if not proposal:
         raise HTTPException(status_code=404, detail="Proposal not found")
+    if proposal.get("user_id") != user.user_id:
+        raise HTTPException(status_code=403, detail=t("error_no_permission_proposal", default="无权访问该提案"))
     
-    sandbox = store.sandboxes.get(req.sandbox_id)
+    snapshot: dict = {}
+    try:
+        snapshot = build_context_snapshot_for_proposal(user=user, proposal_id=req.proposal_id)
+    except (ValueError, PermissionError):
+        snapshot = {}
+
+    source_sandbox_id = str(proposal.get("sandbox_id") or req.sandbox_id or "").strip()
+    sandbox = store.sandboxes.get(source_sandbox_id)
     unnamed = t("msg_sandbox_unnamed", default="未命名沙盒")
     unknown = t("msg_sandbox_unknown", default="未知沙盒")
     sandbox_name = sandbox.get("name", unnamed) if sandbox else unknown
     
-    # We use the final iteration's result as the source for summarization
-    # Assuming proposal object contains the analysis result data
     suggestion = generate_skill_proposal(
         message=req.message,
-        analysis_result=proposal, # proposal often is the dict representation of the final result
+        analysis_result=proposal,
         sandbox_name=sandbox_name
     )
-    return suggestion
+    normalized_suggestion = _build_skill_proposal_fallback(
+        proposal=proposal,
+        requested_message=req.message,
+        sandbox_name=sandbox_name,
+        suggestion=suggestion,
+    )
+    return {**normalized_suggestion, "context_snapshot": snapshot}
 
 
 @app.delete("/api/skills/{skill_id}")
