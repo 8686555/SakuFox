@@ -4,6 +4,11 @@
 
 SakuFox is an interactive data analysis platform based on Agentic autonomous agents and Human-in-the-Loop (HITL). It transforms natural language into interpretable SQL within a restricted business domain, allowing users to refine AI logic through interaction and precipitate it into reusable business skills.
 
+If you want a deeper explanation of the project from two different angles, start here:
+
+- [Technical perspective: why AI Q&A is more than NL2SQL](docs/technical-perspective.md)
+- [Product perspective: why AI Q&A should become an organizational cognition system](docs/product-perspective.md)
+
 ![intro](images/preview.png)
 ![intro](images/usage.png)
 
@@ -81,6 +86,11 @@ Move beyond ephemeral sessions. Create, name, and manage dedicated Workspaces fo
 *   **Frontend**: Vanilla JavaScript + CSS (Premium Dark/Glassmorphism aesthetic)
     *   **Charts**: [Apache ECharts](https://echarts.apache.org/)
     *   **Markdown**: [Marked.js](https://marked.js.org/)
+
+## 📚 Further Reading
+
+- [Technical perspective](docs/technical-perspective.md)
+- [Product perspective](docs/product-perspective.md)
 
 ## 📝 Core API Endpoints
 
