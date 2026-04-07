@@ -1222,14 +1222,11 @@ def generate_auto_analysis_report_bundle(
     if not stage2_bundle.get("chart_bindings"):
         stage2_bundle["chart_bindings"] = default_chart_bindings
 
-    required_chart_count = min(3, len(chart_ids))
-    stage2_ai_html = str(stage2_parsed.get("html_document", "") or "")
-    is_qualified = _is_standalone_html_document(stage2_ai_html)
-    if is_qualified and _html_contains_markdown_artifacts(stage2_ai_html):
-        is_qualified = False
-    if is_qualified and required_chart_count > 0:
-        placeholder_ids = set(re.findall(r'data-chart-id=["\']([^"\']+)["\']', stage2_ai_html, flags=re.IGNORECASE))
-        is_qualified = len(placeholder_ids) >= required_chart_count
+    stage2_bundle["html_document"] = _ensure_chart_placeholders(
+        stage2_bundle.get("html_document", ""),
+        stage2_bundle.get("chart_bindings", []),
+    )
+    is_qualified = _is_standalone_html_document(stage2_bundle.get("html_document", ""))
     if not is_qualified:
         for _ in range(2):
             repaired_html = _generate_html_document_by_llm(
@@ -1242,19 +1239,11 @@ def generate_auto_analysis_report_bundle(
             )
             if not repaired_html:
                 continue
-            stage2_bundle["html_document"] = repaired_html
+            stage2_bundle["html_document"] = _ensure_chart_placeholders(
+                repaired_html,
+                stage2_bundle.get("chart_bindings", []),
+            )
             is_qualified = _is_standalone_html_document(stage2_bundle.get("html_document", ""))
-            if is_qualified and _html_contains_markdown_artifacts(stage2_bundle.get("html_document", "")):
-                is_qualified = False
-            if is_qualified and required_chart_count > 0:
-                placeholder_ids = set(
-                    re.findall(
-                        r'data-chart-id=["\']([^"\']+)["\']',
-                        stage2_bundle.get("html_document", ""),
-                        flags=re.IGNORECASE,
-                    )
-                )
-                is_qualified = len(placeholder_ids) >= required_chart_count
             if is_qualified:
                 break
 
@@ -1263,6 +1252,10 @@ def generate_auto_analysis_report_bundle(
 
     if not _is_standalone_html_document(stage2_bundle.get("html_document", "")):
         stage2_bundle["html_document"] = _wrap_html_fragment_as_document(stage2_bundle.get("html_document", ""))
+    stage2_bundle["html_document"] = _ensure_chart_placeholders(
+        stage2_bundle.get("html_document", ""),
+        stage2_bundle.get("chart_bindings", []),
+    )
     return stage2_bundle
 
 
@@ -1713,9 +1706,28 @@ def _build_polished_report_sections(markdown_text: str, fallback_title: str) -> 
     current_level = 2
     current_lines: list[str] = []
 
+    def has_meaningful_content(raw_lines: list[str]) -> bool:
+        placeholder_tokens = {"-", "--", "—", "*", "n/a", "none", "无", "暂无", "待补充", "待确认"}
+        for line in raw_lines:
+            cleaned = str(line or "").strip()
+            if not cleaned:
+                continue
+            cleaned = re.sub(r"^\s{0,3}#{1,6}\s*", "", cleaned)
+            cleaned = re.sub(r"^\s*\d+\.\s+", "", cleaned)
+            cleaned = re.sub(r"^\s*[-*+]\s*", "", cleaned).strip()
+            if not cleaned:
+                continue
+            normalized = re.sub(r"\s+", "", cleaned).lower()
+            if normalized in placeholder_tokens:
+                continue
+            if re.fullmatch(r"[-_*]{3,}", normalized):
+                continue
+            return True
+        return False
+
     def flush_current() -> None:
         nonlocal current_heading, current_lines, current_level
-        if current_heading or any(line.strip() for line in current_lines):
+        if has_meaningful_content(current_lines):
             heading = current_heading or ("Overview" if get_lang() == "en" else "概览")
             sections.append((current_level, heading, current_lines))
         current_heading = ""
@@ -1747,7 +1759,7 @@ def _build_polished_report_sections(markdown_text: str, fallback_title: str) -> 
         else:
             intro_lines.append(line)
 
-    if intro_lines:
+    if has_meaningful_content(intro_lines):
         sections.insert(0, (2, "Overview" if get_lang() == "en" else "概览", intro_lines))
     flush_current()
     if not sections and str(markdown_text or "").strip():
@@ -1767,6 +1779,8 @@ def _build_polished_report_sections(markdown_text: str, fallback_title: str) -> 
         )
 
     summary = _strip_markdown_to_plain_text(markdown_text).replace("\n", " ")
+    summary = re.sub(r"(^|\s)-(?=\s|$)", " ", summary)
+    summary = re.sub(r"\s{2,}", " ", summary).strip()
     return title, (summary[:240] if summary else ""), "\n".join(rendered_sections)
 
 
@@ -1785,12 +1799,12 @@ def _markdown_to_basic_html(markdown_text: str, extra_blocks: str = "") -> str:
         ".report{max-width:1180px;margin:0 auto;padding:32px 24px 48px}.hero{background:#0f172a;color:#fff;border-radius:8px;padding:34px 38px;margin-bottom:22px;position:relative;overflow:hidden}"
         ".hero:after{content:\"\";position:absolute;inset:auto -90px -120px auto;width:260px;height:260px;border-radius:50%;background:rgba(14,165,233,.22)}"
         ".eyebrow{font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:#7dd3fc;font-weight:700;margin-bottom:10px}.hero h1{font-size:34px;line-height:1.25;margin:0;max-width:840px}.hero p{max-width:920px;color:#dbeafe;line-height:1.7;margin:14px 0 0}"
-        ".report-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px}.report-section{background:#fff;border:1px solid #dbe5ef;border-radius:8px;padding:22px 24px;box-shadow:0 12px 34px rgba(15,23,42,.08);position:relative;overflow:hidden}"
+        ".report-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px;align-items:start}.report-section{background:#fff;border:1px solid #dbe5ef;border-radius:8px;padding:22px 24px;box-shadow:0 12px 34px rgba(15,23,42,.08);position:relative;overflow:hidden;min-width:0;display:flex;flex-direction:column}"
         ".report-section:before{content:\"\";position:absolute;left:0;top:0;bottom:0;width:4px;background:#0ea5e9}.report-section:first-child{grid-column:1/-1}.section-index{font-size:12px;color:#0284c7;font-weight:800;margin-bottom:8px}.report-section h2{margin:0 0 14px;font-size:22px;line-height:1.35}"
-        ".section-body{font-size:15px;line-height:1.75;color:#1f2937}.section-body p{margin:10px 0}.section-body ul,.section-body ol{margin:10px 0 0 22px;padding:0}.section-body li{margin:7px 0}.section-body strong{color:#0f172a}.section-body code{padding:2px 6px;border-radius:5px;background:#e2e8f0;font-family:Consolas,monospace}"
-        ".section-body table{width:100%;border-collapse:separate;border-spacing:0;margin:14px 0;font-size:13px;overflow:hidden;border:1px solid #dbe5ef;border-radius:8px}.section-body th,.section-body td{padding:10px 12px;text-align:left;vertical-align:top;border-bottom:1px solid #e2e8f0}.section-body th{background:#f1f7fb;color:#0f172a;font-weight:800}.section-body tr:last-child td{border-bottom:0}"
+        ".section-body{font-size:15px;line-height:1.75;color:#1f2937;overflow-wrap:anywhere;word-break:break-word}.section-body>*{max-width:100%}.section-body p{margin:10px 0}.section-body ul,.section-body ol{margin:10px 0 0 22px;padding:0}.section-body li{margin:7px 0}.section-body strong{color:#0f172a}.section-body code{padding:2px 6px;border-radius:5px;background:#e2e8f0;font-family:Consolas,monospace}.section-body pre{white-space:pre-wrap;overflow-wrap:anywhere}"
+        ".section-body table{width:100%;table-layout:fixed;border-collapse:separate;border-spacing:0;margin:14px 0;font-size:13px;overflow:hidden;border:1px solid #dbe5ef;border-radius:8px}.section-body th,.section-body td{padding:10px 12px;text-align:left;vertical-align:top;border-bottom:1px solid #e2e8f0;word-break:break-word;overflow-wrap:anywhere}.section-body th{background:#f1f7fb;color:#0f172a;font-weight:800}.section-body tr:last-child td{border-bottom:0}.section-body img{max-width:100%;height:auto}"
         "section[data-chart-id],div[data-chart-id]{min-height:260px}.report>section{background:#fff;border:1px solid #dbe5ef;border-radius:8px;padding:22px 24px;margin-top:18px;box-shadow:0 12px 34px rgba(15,23,42,.08)}"
-        "@media(max-width:860px){.report{padding:18px 12px 32px}.hero{padding:26px 22px}.hero h1{font-size:28px}.report-grid{grid-template-columns:1fr}}@media print{body{background:#fff}.report{max-width:none;padding:0}.hero,.report-section,.report>section{box-shadow:none;border-color:#d7dee8}}</style>"
+        "@media(max-width:860px){.report{padding:18px 12px 32px}.hero{padding:26px 22px}.hero h1{font-size:28px}.report-grid{grid-template-columns:1fr}}@media print{body{background:#fff}.report{max-width:none;padding:0}.report-grid{grid-template-columns:1fr!important;gap:12px}.report-section{break-inside:avoid-page;page-break-inside:avoid}.hero,.report-section,.report>section{box-shadow:none;border-color:#d7dee8}}</style>"
         "</head><body><main class=\"report\">"
         f"<header class=\"hero\"><div class=\"eyebrow\">{eyebrow}</div><h1>{html.escape(report_title)}</h1>{summary_html}</header>"
         f"<div class=\"report-grid\">{rendered}</div>"
