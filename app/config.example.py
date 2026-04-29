@@ -1,4 +1,5 @@
 import os
+import json
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -21,6 +22,45 @@ MAX_SELECTED_TABLES = 5
 DEFAULT_DB_TYPE = "sqlite"
 DEFAULT_DB_URL = "sqlite:///./sakufox.db"
 DB_CONNECTION_SECRET_KEY = "replace-with-your-secret-key"
+
+# --- Authentication / Authorization ---
+# AUTH_TYPE can be mock, ldap, oauth, or hybrid. Use mock only for local tests.
+AUTH_TYPE = "mock"
+AUTH_SESSION_TTL_SECONDS = 60 * 60 * 12
+AUTH_COOKIE_NAME = "sakufox_session"
+AUTH_COOKIE_SECURE = False
+AUTH_ROLES_SYNC_AT_LOGIN = True
+AUTH_ROLES_MAPPING = {
+    "admin": ["Admin"],
+    "finance": ["Analyst"],
+    "marketing": ["Analyst"],
+    "data": ["Analyst"],
+}
+
+# LDAP example:
+LDAP_SERVER_URI = "ldaps://ldap.example.com"
+LDAP_BIND_DN = "cn=readonly,dc=example,dc=com"
+LDAP_BIND_PASSWORD = ""
+LDAP_SEARCH_BASE = "ou=users,dc=example,dc=com"
+LDAP_USER_FILTER = "(uid={username})"
+LDAP_UID_FIELD = "uid"
+LDAP_DISPLAY_NAME_FIELD = "cn"
+LDAP_EMAIL_FIELD = "mail"
+LDAP_GROUP_FIELD = "memberOf"
+LDAP_GROUP_NAME_REGEX = r"CN=([^,]+)"
+
+# OAuth/OIDC example. Override through env/.env with JSON for real deployments.
+OAUTH_PROVIDERS = {
+    # "corp": {
+    #     "client_id": "",
+    #     "client_secret": "",
+    #     "server_metadata_url": "https://idp.example.com/.well-known/openid-configuration",
+    #     "scope": "openid email profile",
+    #     "redirect_uri": "http://localhost:8000/api/auth/oauth/corp/callback",
+    #     "userinfo_endpoint": "https://idp.example.com/oauth2/userinfo"
+    # }
+}
+OAUTH_STATE_TTL_SECONDS = 600
 
 # ── 迭代式分析核心提示词（Multi-Step Agentic） ─────────────────────────
 ITERATION_SYSTEM_PROMPT = (
@@ -142,6 +182,48 @@ class AppConfig:
     db_type: str
     db_url: str
     db_connection_secret_key: str
+    auth_type: str
+    auth_session_ttl_seconds: int
+    auth_cookie_name: str
+    auth_cookie_secure: bool
+    auth_roles_sync_at_login: bool
+    auth_roles_mapping: dict[str, list[str]]
+    ldap_server_uri: str
+    ldap_bind_dn: str
+    ldap_bind_password: str
+    ldap_search_base: str
+    ldap_user_filter: str
+    ldap_uid_field: str
+    ldap_display_name_field: str
+    ldap_email_field: str
+    ldap_group_field: str
+    ldap_group_name_regex: str
+    oauth_providers: dict
+    oauth_state_ttl_seconds: int
+
+
+def _pick_int(*values: str, default: int) -> int:
+    raw = _pick(*values, default=str(default))
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return default
+
+
+def _pick_bool(*values: str, default: bool) -> bool:
+    raw = _pick(*values, default="true" if default else "false").lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _pick_json(default_value, *values: str):
+    raw = _pick(*values, default="")
+    if not raw:
+        return default_value
+    try:
+        parsed = json.loads(raw)
+        return parsed if parsed is not None else default_value
+    except json.JSONDecodeError:
+        return default_value
 
 
 def load_config() -> AppConfig:
@@ -170,4 +252,22 @@ def load_config() -> AppConfig:
         db_type=_pick(os.getenv("DB_TYPE", ""), dotenv.get("DB_TYPE", ""), DEFAULT_DB_TYPE),
         db_url=_pick(os.getenv("DB_URL", ""), dotenv.get("DB_URL", ""), DEFAULT_DB_URL),
         db_connection_secret_key=DB_CONNECTION_SECRET_KEY,
+        auth_type=_pick(os.getenv("AUTH_TYPE", ""), dotenv.get("AUTH_TYPE", ""), AUTH_TYPE, default="mock").lower(),
+        auth_session_ttl_seconds=_pick_int(os.getenv("AUTH_SESSION_TTL_SECONDS", ""), dotenv.get("AUTH_SESSION_TTL_SECONDS", ""), str(AUTH_SESSION_TTL_SECONDS), default=AUTH_SESSION_TTL_SECONDS),
+        auth_cookie_name=_pick(os.getenv("AUTH_COOKIE_NAME", ""), dotenv.get("AUTH_COOKIE_NAME", ""), AUTH_COOKIE_NAME, default="sakufox_session"),
+        auth_cookie_secure=_pick_bool(os.getenv("AUTH_COOKIE_SECURE", ""), dotenv.get("AUTH_COOKIE_SECURE", ""), str(AUTH_COOKIE_SECURE), default=AUTH_COOKIE_SECURE),
+        auth_roles_sync_at_login=_pick_bool(os.getenv("AUTH_ROLES_SYNC_AT_LOGIN", ""), dotenv.get("AUTH_ROLES_SYNC_AT_LOGIN", ""), str(AUTH_ROLES_SYNC_AT_LOGIN), default=AUTH_ROLES_SYNC_AT_LOGIN),
+        auth_roles_mapping=_pick_json(AUTH_ROLES_MAPPING, os.getenv("AUTH_ROLES_MAPPING", ""), dotenv.get("AUTH_ROLES_MAPPING", "")),
+        ldap_server_uri=_pick(os.getenv("LDAP_SERVER_URI", ""), dotenv.get("LDAP_SERVER_URI", ""), LDAP_SERVER_URI),
+        ldap_bind_dn=_pick(os.getenv("LDAP_BIND_DN", ""), dotenv.get("LDAP_BIND_DN", ""), LDAP_BIND_DN),
+        ldap_bind_password=_pick(os.getenv("LDAP_BIND_PASSWORD", ""), dotenv.get("LDAP_BIND_PASSWORD", ""), LDAP_BIND_PASSWORD),
+        ldap_search_base=_pick(os.getenv("LDAP_SEARCH_BASE", ""), dotenv.get("LDAP_SEARCH_BASE", ""), LDAP_SEARCH_BASE),
+        ldap_user_filter=_pick(os.getenv("LDAP_USER_FILTER", ""), dotenv.get("LDAP_USER_FILTER", ""), LDAP_USER_FILTER, default="(uid={username})"),
+        ldap_uid_field=_pick(os.getenv("LDAP_UID_FIELD", ""), dotenv.get("LDAP_UID_FIELD", ""), LDAP_UID_FIELD, default="uid"),
+        ldap_display_name_field=_pick(os.getenv("LDAP_DISPLAY_NAME_FIELD", ""), dotenv.get("LDAP_DISPLAY_NAME_FIELD", ""), LDAP_DISPLAY_NAME_FIELD, default="cn"),
+        ldap_email_field=_pick(os.getenv("LDAP_EMAIL_FIELD", ""), dotenv.get("LDAP_EMAIL_FIELD", ""), LDAP_EMAIL_FIELD, default="mail"),
+        ldap_group_field=_pick(os.getenv("LDAP_GROUP_FIELD", ""), dotenv.get("LDAP_GROUP_FIELD", ""), LDAP_GROUP_FIELD, default="memberOf"),
+        ldap_group_name_regex=_pick(os.getenv("LDAP_GROUP_NAME_REGEX", ""), dotenv.get("LDAP_GROUP_NAME_REGEX", ""), LDAP_GROUP_NAME_REGEX, default=r"CN=([^,]+)"),
+        oauth_providers=_pick_json(OAUTH_PROVIDERS, os.getenv("OAUTH_PROVIDERS", ""), dotenv.get("OAUTH_PROVIDERS", "")),
+        oauth_state_ttl_seconds=_pick_int(os.getenv("OAUTH_STATE_TTL_SECONDS", ""), dotenv.get("OAUTH_STATE_TTL_SECONDS", ""), str(OAUTH_STATE_TTL_SECONDS), default=OAUTH_STATE_TTL_SECONDS),
     )

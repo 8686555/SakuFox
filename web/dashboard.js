@@ -2090,6 +2090,7 @@ async function handleSend(hypothesisId = null) {
       method: "POST",
 
       headers,
+      credentials: "include",
 
       signal: controller.signal,
 
@@ -2354,6 +2355,7 @@ async function handleAutoAnalyze() {
       method: "POST",
 
       headers,
+      credentials: "include",
 
       signal: controller.signal,
 
@@ -2707,7 +2709,7 @@ document.getElementById("uploadBtn").onclick = async () => {
 
 
 
-    const res = await fetch("/api/data/upload", { method: "POST", headers, body: form });
+    const res = await fetch("/api/data/upload", { method: "POST", headers, body: form, credentials: "include" });
 
     if (!res.ok) throw new Error(await res.text());
 

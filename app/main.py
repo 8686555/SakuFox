@@ -9,8 +9,8 @@ from pathlib import Path
 
 import pandas as pd
 from pydantic import BaseModel
-from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Response, UploadFile
+from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi import Request
 
@@ -24,11 +24,12 @@ from app.agent import (
     generate_data_insight,
     generate_skill_proposal,
 )
-from app.auth import get_current_user, login_with_ldap, login_with_oauth
+from app.auth import auth_manager, get_current_user, login_with_ldap, login_with_oauth
 from app.authorization import (
     assert_sandbox_access,
     get_accessible_sandboxes,
     get_accessible_tables,
+    require_permission,
 )
 from app.config import load_config, MAX_SELECTED_TABLES
 from app.db_connections import DbConnectionConfig, execute_external_sql, get_engine, test_connection, get_table_names
@@ -1423,12 +1424,54 @@ def _build_auto_iteration_payload(
 
 
 @app.post("/api/auth/login")
-def login(req: LoginRequest):
+def login(req: LoginRequest, response: Response):
     if req.provider == "ldap":
-        token, user = login_with_ldap(req.username)
+        token, user = login_with_ldap(req.username, req.password)
     else:
-        token, user = login_with_oauth(req.oauth_token)
+        token, user = login_with_oauth(req.oauth_token, req.oauth_provider)
+    response.set_cookie(
+        key=load_config().auth_cookie_name,
+        value=token,
+        httponly=True,
+        secure=load_config().auth_cookie_secure,
+        samesite="lax",
+        max_age=load_config().auth_session_ttl_seconds,
+    )
     return {"token": token, "user": user.__dict__}
+
+
+@app.get("/api/auth/providers")
+def auth_providers():
+    return auth_manager.providers()
+
+
+@app.get("/api/auth/oauth/{provider_name}/login")
+def oauth_login(provider_name: str, request: Request):
+    return RedirectResponse(auth_manager.start_oauth_login(provider_name, request))
+
+
+@app.get("/api/auth/oauth/{provider_name}/callback")
+def oauth_callback(provider_name: str, code: str | None = None, state: str | None = None):
+    token, _user = auth_manager.complete_oauth_callback(provider_name, code, state)
+    response = RedirectResponse("/dashboard")
+    cfg = load_config()
+    response.set_cookie(
+        key=cfg.auth_cookie_name,
+        value=token,
+        httponly=True,
+        secure=cfg.auth_cookie_secure,
+        samesite="lax",
+        max_age=cfg.auth_session_ttl_seconds,
+    )
+    return response
+
+
+@app.post("/api/auth/logout")
+def logout(request: Request, response: Response, authorization: str | None = Header(default=None)):
+    auth_manager.logout(request, authorization)
+    cfg = load_config()
+    response.delete_cookie(key=cfg.auth_cookie_name)
+    return {"ok": True}
 
 
 @app.get("/api/me")
@@ -1457,6 +1500,7 @@ def iterate(req: IterateRequest, user: User = Depends(get_current_user)):
     hypotheses + action items.  Results are streamed as NDJSON.
     """
     try:
+        require_permission(user, "execute", "chat")
         sandbox = assert_sandbox_access(user, req.sandbox_id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
@@ -1653,6 +1697,7 @@ def iterate(req: IterateRequest, user: User = Depends(get_current_user)):
 def auto_analyze(req: AutoAnalyzeRequest, user: User = Depends(get_current_user)):
     """Multi-round autonomous analysis until the model stops using tools."""
     try:
+        require_permission(user, "execute", "chat")
         sandbox = assert_sandbox_access(user, req.sandbox_id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
@@ -1970,6 +2015,10 @@ async def upload_data(
     session_id: str | None = Form(default=None),
     user: User = Depends(get_current_user),
 ):
+    try:
+        assert_sandbox_access(user, sandbox_id, action="write")
+    except (ValueError, PermissionError) as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
     sid, _ = store.get_or_create_session(user.user_id, session_id)
     os.makedirs("uploads", exist_ok=True)
     
@@ -2198,11 +2247,19 @@ class SaveTablesRequest(BaseModel):
 
 @app.get("/api/db-connections")
 def list_db_connections(user: User = Depends(get_current_user)):
+    try:
+        require_permission(user, "manage", "db_connection")
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
     return {"connections": store.list_db_connections()}
 
 
 @app.post("/api/db-connections/test")
 def test_standalone_db_connection(req: DbConnectionTestRequest, user: User = Depends(get_current_user)):
+    try:
+        require_permission(user, "manage", "db_connection")
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
     try:
         cfg = DbConnectionConfig(
             db_type=req.db_type,
@@ -2221,6 +2278,10 @@ def test_standalone_db_connection(req: DbConnectionTestRequest, user: User = Dep
 
 @app.post("/api/db-connections")
 def create_db_connection(req: DbConnectionCreateRequest, user: User = Depends(get_current_user)):
+    try:
+        require_permission(user, "manage", "db_connection")
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
     try:
         cfg = DbConnectionConfig(
             db_type=req.db_type,
@@ -2255,6 +2316,10 @@ def create_db_connection(req: DbConnectionCreateRequest, user: User = Depends(ge
 
 @app.put("/api/db-connections/{connection_id}")
 def update_db_connection(connection_id: str, req: DbConnectionUpdateRequest, user: User = Depends(get_current_user)):
+    try:
+        require_permission(user, "manage", "db_connection", connection_id)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
     current = store.get_db_connection(connection_id, include_password=True)
     if not current:
         raise HTTPException(status_code=404, detail=t("error_db_connection_not_found", default="Database connection not found"))
@@ -2302,6 +2367,10 @@ def update_db_connection(connection_id: str, req: DbConnectionUpdateRequest, use
 
 @app.delete("/api/db-connections/{connection_id}")
 def delete_db_connection(connection_id: str, user: User = Depends(get_current_user)):
+    try:
+        require_permission(user, "manage", "db_connection", connection_id)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
     ok = store.delete_db_connection(connection_id)
     if not ok:
         raise HTTPException(status_code=404, detail=t("error_db_connection_not_found", default="Database connection not found"))
@@ -2372,6 +2441,7 @@ def execute_sql_toolbox(req: SQLToolboxExecuteRequest, user: User = Depends(get_
         raise HTTPException(status_code=400, detail=t("error_empty_code", default="空代码"))
 
     try:
+        require_permission(user, "execute", "sql_toolbox")
         sandbox = assert_sandbox_access(user, req.sandbox_id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
@@ -2875,9 +2945,14 @@ def create_sandbox(
     user: User = Depends(get_current_user),
 ):
     """Create a new personal Sandbox workspace."""
+    try:
+        require_permission(user, "create", "sandbox")
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
     # Default to user's groups if none provided, ensuring they can see it
     groups = req.allowed_groups if req.allowed_groups else user.groups
-    sandbox_id = store.create_sandbox(name=req.name, allowed_groups=groups)
+    roles = req.allowed_roles if req.allowed_roles is not None else user.roles
+    sandbox_id = store.create_sandbox(name=req.name, allowed_groups=groups, allowed_roles=roles)
     return {"sandbox_id": sandbox_id, "message": t("msg_sandbox_created")}
 
 @app.put("/api/sandboxes/{sandbox_id}")
@@ -2888,7 +2963,7 @@ def rename_sandbox(
 ):
     """Rename an existing Sandbox workspace."""
     try:
-        assert_sandbox_access(user, sandbox_id)
+        assert_sandbox_access(user, sandbox_id, action="write")
         sandbox = store.update_sandbox(sandbox_id, {"name": req.name})
         return {"sandbox_id": sandbox_id, "name": sandbox["name"], "message": t("msg_sandbox_renamed")}
     except (ValueError, PermissionError) as exc:
@@ -2902,7 +2977,7 @@ def delete_sandbox(
     """Delete a Sandbox workspace."""
     try:
         # Check permissions before deleting
-        assert_sandbox_access(user, sandbox_id)
+        assert_sandbox_access(user, sandbox_id, action="write")
         store.delete_sandbox(sandbox_id)
         return {"ok": True, "message": t("msg_sandbox_deleted")}
     except (ValueError, PermissionError) as exc:

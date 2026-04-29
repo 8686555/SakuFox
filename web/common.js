@@ -244,11 +244,18 @@ async function api(path, options = {}) {
     "X-Language": i18n.lang,
     ...(options.headers || {})
   };
-  headers.Authorization = `Bearer mock_token`;
+  const token = localStorage.getItem("token");
+  if (token) {
+    headers.Authorization = `Bearer ${token}`;
+  }
 
-  const res = await fetch(API_BASE + path, { ...options, headers });
+  const res = await fetch(API_BASE + path, { ...options, headers, credentials: "include" });
 
   if (!res.ok) {
+    if (res.status === 401 && !window.location.pathname.endsWith("/login.html")) {
+      window.location.href = "/web/login.html";
+      return Promise.reject(new Error("Not authenticated"));
+    }
     const err = await res.json();
     throw new Error(err.detail || i18n.t("request_failed") || "\u8bf7\u6c42\u5931\u8d25");
   }

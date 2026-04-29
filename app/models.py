@@ -4,7 +4,9 @@ from pydantic import BaseModel, Field
 class LoginRequest(BaseModel):
     provider: str = Field(pattern="^(ldap|oauth)$")
     username: str | None = None
+    password: str | None = None
     oauth_token: str | None = None
+    oauth_provider: str | None = None
 
 
 class IterateRequest(BaseModel):
@@ -64,7 +66,8 @@ class UpdateSkillRequest(BaseModel):
 
 class CreateSandboxRequest(BaseModel):
     name: str
-    allowed_groups: list[str]
+    allowed_groups: list[str] = []
+    allowed_roles: list[str] | None = None
 
 
 class RenameSandboxRequest(BaseModel):

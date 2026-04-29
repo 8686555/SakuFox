@@ -20,9 +20,9 @@ import hashlib
 
 import os
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from pathlib import Path
 
@@ -47,6 +47,8 @@ from app.db_connections import DbConnectionConfig, get_engine, get_table_names
 from app.db_models import (
     Base,
     DBUser,
+    DBAuthSession,
+    DBRole,
     DBSandbox,
     DBSession,
     DBIteration,
@@ -78,6 +80,12 @@ class User:
     groups: list[str]
 
     provider: str
+
+    email: str = ""
+
+    roles: list[str] = field(default_factory=list)
+
+    permissions: list[dict] = field(default_factory=list)
 
 
 
@@ -156,6 +164,7 @@ class DatabaseStore:
         Base.metadata.create_all(self.engine)
 
         self._run_migrations()
+        self._ensure_default_roles()
 
         self._seed_sandbox_data()
 
@@ -292,6 +301,16 @@ class DatabaseStore:
 
             with self.engine.begin() as conn:
 
+                conn.execute(text("ALTER TABLE sandboxes ADD COLUMN allowed_roles JSON"))
+
+        except Exception:
+
+            pass # Already exists
+
+        try:
+
+            with self.engine.begin() as conn:
+
                 conn.execute(text("ALTER TABLE sandboxes ADD COLUMN db_connection_id VARCHAR(50)"))
 
         except Exception:
@@ -311,6 +330,19 @@ class DatabaseStore:
         except Exception:
 
             pass # Already exists
+
+        for stmt in (
+            "ALTER TABLE users ADD COLUMN email VARCHAR(255)",
+            "ALTER TABLE users ADD COLUMN external_id VARCHAR(255)",
+            "ALTER TABLE users ADD COLUMN roles JSON",
+            "ALTER TABLE users ADD COLUMN is_active BOOLEAN DEFAULT 1",
+            "ALTER TABLE users ADD COLUMN last_login_at VARCHAR(50)",
+        ):
+            try:
+                with self.engine.begin() as conn:
+                    conn.execute(text(stmt))
+            except Exception:
+                pass # Already exists
 
         for stmt in (
             "ALTER TABLE iterations ADD COLUMN mode VARCHAR(50) DEFAULT 'manual'",
@@ -338,6 +370,62 @@ class DatabaseStore:
                 pass # Already exists
 
         self._migrate_legacy_sandbox_db_configs()
+
+
+    def _ensure_default_roles(self) -> None:
+
+        default_roles = {
+            "Admin": {
+                "description": "Full administrative access",
+                "permissions": [{"action": "*", "resource_type": "*", "resource_id": "*"}],
+            },
+            "Analyst": {
+                "description": "Analyze data in accessible sandboxes and manage owned analytical assets",
+                "permissions": [
+                    {"action": "read", "resource_type": "sandbox", "resource_id": "*"},
+                    {"action": "write", "resource_type": "sandbox", "resource_id": "*"},
+                    {"action": "read", "resource_type": "table", "resource_id": "*"},
+                    {"action": "execute", "resource_type": "chat", "resource_id": "*"},
+                    {"action": "execute", "resource_type": "sql_toolbox", "resource_id": "*"},
+                    {"action": "read", "resource_type": "knowledge_asset", "resource_id": "*"},
+                    {"action": "write", "resource_type": "knowledge_asset", "resource_id": "*"},
+                    {"action": "read", "resource_type": "skill", "resource_id": "*"},
+                    {"action": "write", "resource_type": "skill", "resource_id": "*"},
+                ],
+            },
+            "Viewer": {
+                "description": "Read-only access to permitted resources",
+                "permissions": [
+                    {"action": "read", "resource_type": "sandbox", "resource_id": "*"},
+                    {"action": "read", "resource_type": "table", "resource_id": "*"},
+                    {"action": "read", "resource_type": "knowledge_asset", "resource_id": "*"},
+                    {"action": "read", "resource_type": "skill", "resource_id": "*"},
+                ],
+            },
+        }
+
+        with self.SessionFactory() as sess:
+
+            changed = False
+
+            for name, payload in default_roles.items():
+
+                role = sess.get(DBRole, name)
+
+                if role is None:
+
+                    sess.add(DBRole(
+                        name=name,
+                        description=payload["description"],
+                        permissions=payload["permissions"],
+                        built_in=True,
+                    ))
+
+                    changed = True
+
+            if changed:
+
+                sess.commit()
 
 
     def _migrate_legacy_sandbox_db_configs(self) -> None:
@@ -577,6 +665,8 @@ class DatabaseStore:
 
                     allowed_groups=["finance", "marketing", "data", "admin"],
 
+                    allowed_roles=["Admin", "Analyst"],
+
                     business_knowledge=[],
 
                     uploads={},
@@ -601,7 +691,7 @@ class DatabaseStore:
 
                 sess.commit()
 
-            elif sb.knowledge_bases is None or sb.mounted_skills is None:
+            elif sb.knowledge_bases is None or sb.mounted_skills is None or sb.allowed_roles is None:
 
                 if sb.knowledge_bases is None:
 
@@ -610,6 +700,10 @@ class DatabaseStore:
                 if sb.mounted_skills is None:
 
                     sb.mounted_skills = []
+
+                if sb.allowed_roles is None:
+
+                    sb.allowed_roles = ["Admin", "Analyst"]
 
                 sess.commit()
 
@@ -643,13 +737,189 @@ class DatabaseStore:
 
 
 
+    def _hash_token(self, token: str) -> str:
+
+        return hashlib.sha256(str(token or "").encode("utf-8")).hexdigest()
+
+
+    def _role_names_for_groups(self, groups: list[str]) -> list[str]:
+
+        role_names: list[str] = []
+
+        mapping = self._config.auth_roles_mapping or {}
+
+        for group in groups or []:
+
+            for role in mapping.get(group, []):
+
+                role_text = str(role).strip()
+
+                if role_text and role_text not in role_names:
+
+                    role_names.append(role_text)
+
+        if not role_names:
+
+            role_names.append("Viewer")
+
+        return role_names
+
+
+    def get_role_permissions(self, role_names: list[str]) -> list[dict]:
+
+        output: list[dict] = []
+
+        seen: set[tuple[str, str, str]] = set()
+
+        with self.SessionFactory() as sess:
+
+            for role_name in role_names or []:
+
+                role = sess.get(DBRole, role_name)
+
+                for perm in (role.permissions if role else []) or []:
+
+                    action = str(perm.get("action") or "").strip()
+
+                    resource_type = str(perm.get("resource_type") or "").strip()
+
+                    resource_id = str(perm.get("resource_id") or "*").strip() or "*"
+
+                    if not action or not resource_type:
+
+                        continue
+
+                    key = (action, resource_type, resource_id)
+
+                    if key in seen:
+
+                        continue
+
+                    seen.add(key)
+
+                    output.append({"action": action, "resource_type": resource_type, "resource_id": resource_id})
+
+        return output
+
+
+    def _db_user_to_user(self, db_user: DBUser) -> User:
+
+        roles = list(db_user.roles or [])
+
+        return User(
+            user_id=db_user.user_id,
+            username=db_user.username,
+            display_name=db_user.display_name or db_user.username,
+            groups=list(db_user.groups or []),
+            provider=db_user.provider or "",
+            email=db_user.email or "",
+            roles=roles,
+            permissions=self.get_role_permissions(roles),
+        )
+
+
+    def upsert_auth_user(
+        self,
+        *,
+        username: str,
+        display_name: str | None,
+        provider: str,
+        groups: list[str] | None = None,
+        email: str | None = None,
+        external_id: str | None = None,
+        user_id: str | None = None,
+        roles: list[str] | None = None,
+    ) -> User:
+
+        normalized_username = str(username or "").strip()
+
+        if not normalized_username:
+
+            raise ValueError("username is required")
+
+        normalized_groups = [str(item).strip() for item in (groups or []) if str(item).strip()]
+
+        role_names = roles or self._role_names_for_groups(normalized_groups)
+
+        role_names = [str(item).strip() for item in role_names if str(item).strip()]
+
+        now = datetime.now(timezone.utc).isoformat()
+
+        with self.SessionFactory() as sess:
+
+            db_user = sess.execute(select(DBUser).where(DBUser.username == normalized_username)).scalar_one_or_none()
+
+            if db_user is None and external_id:
+
+                db_user = sess.execute(select(DBUser).where(DBUser.external_id == external_id)).scalar_one_or_none()
+
+            if db_user is None:
+
+                db_user = DBUser(
+                    user_id=user_id or f"u_{hashlib.sha1((provider + ':' + normalized_username).encode('utf-8')).hexdigest()[:16]}",
+                    username=normalized_username,
+                    display_name=display_name or normalized_username,
+                    email=email or "",
+                    external_id=external_id or normalized_username,
+                    groups=normalized_groups,
+                    roles=role_names,
+                    provider=provider,
+                    is_active=True,
+                    last_login_at=now,
+                )
+
+                sess.add(db_user)
+
+            else:
+
+                db_user.display_name = display_name or db_user.display_name or normalized_username
+
+                db_user.email = email or db_user.email or ""
+
+                db_user.external_id = external_id or db_user.external_id or normalized_username
+
+                db_user.groups = normalized_groups
+
+                if self._config.auth_roles_sync_at_login or not db_user.roles:
+
+                    db_user.roles = role_names
+
+                db_user.provider = provider
+
+                db_user.is_active = True
+
+                db_user.last_login_at = now
+
+            sess.commit()
+
+            sess.refresh(db_user)
+
+            return self._db_user_to_user(db_user)
+
+
+
     def issue_token(self, user: User) -> str:
 
         token = f"tk_{uuid.uuid4().hex}"
+        expires_at = datetime.now(timezone.utc) + timedelta(seconds=max(60, int(self._config.auth_session_ttl_seconds or 43200)))
 
         with self._lock:
 
             self.tokens[token] = user
+
+        with self.SessionFactory() as sess:
+
+            sess.add(DBAuthSession(
+                session_id=f"as_{uuid.uuid4().hex[:16]}",
+                token_hash=self._hash_token(token),
+                user_id=user.user_id,
+                provider=user.provider,
+                created_at=datetime.now(timezone.utc).isoformat(),
+                expires_at=expires_at.isoformat(),
+                revoked_at=None,
+            ))
+
+            sess.commit()
 
         return token
 
@@ -657,7 +927,68 @@ class DatabaseStore:
 
     def get_user_by_token(self, token: str) -> User | None:
 
+        if not token:
+
+            return None
+
+        token_hash = self._hash_token(token)
+
+        with self.SessionFactory() as sess:
+
+            auth_session = sess.execute(select(DBAuthSession).where(DBAuthSession.token_hash == token_hash)).scalar_one_or_none()
+
+            if auth_session:
+
+                if auth_session.revoked_at:
+
+                    return None
+
+                try:
+
+                    expires_at = datetime.fromisoformat(auth_session.expires_at)
+
+                except Exception:
+
+                    expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+
+                if expires_at < datetime.now(timezone.utc):
+
+                    return None
+
+                db_user = sess.get(DBUser, auth_session.user_id)
+
+                if db_user and db_user.is_active:
+
+                    return self._db_user_to_user(db_user)
+
         return self.tokens.get(token)
+
+
+    def revoke_token(self, token: str) -> bool:
+
+        if not token:
+
+            return False
+
+        token_hash = self._hash_token(token)
+
+        with self._lock:
+
+            self.tokens.pop(token, None)
+
+        with self.SessionFactory() as sess:
+
+            auth_session = sess.execute(select(DBAuthSession).where(DBAuthSession.token_hash == token_hash)).scalar_one_or_none()
+
+            if not auth_session:
+
+                return False
+
+            auth_session.revoked_at = datetime.now(timezone.utc).isoformat()
+
+            sess.commit()
+
+            return True
 
 
 
@@ -2404,7 +2735,7 @@ class DatabaseStore:
 
     
 
-    def create_sandbox(self, name: str, allowed_groups: list[str]) -> str:
+    def create_sandbox(self, name: str, allowed_groups: list[str], allowed_roles: list[str] | None = None) -> str:
 
         sandbox_id = f"sb_{uuid.uuid4().hex[:12]}"
 
@@ -2419,6 +2750,8 @@ class DatabaseStore:
                 tables=[],
 
                 allowed_groups=allowed_groups,
+
+                allowed_roles=allowed_roles or [],
 
                 business_knowledge=[],
 
@@ -2470,6 +2803,8 @@ class DatabaseStore:
                     "tables": sb.tables or [],
 
                     "allowed_groups": sb.allowed_groups or [],
+
+                    "allowed_roles": sb.allowed_roles or [],
 
                     "business_knowledge": sb.business_knowledge or [],
 
@@ -2765,6 +3100,8 @@ class DatabaseStore:
                     return {
 
                         "allowed_groups": ["finance", "marketing", "data", "admin"],
+
+                        "allowed_roles": ["Admin", "Analyst"],
 
                         "sensitive_fields": [],
 

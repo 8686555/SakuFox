@@ -9,8 +9,32 @@ class DBUser(Base):
     user_id = Column(String(50), primary_key=True)
     username = Column(String(50), unique=True, index=True)
     display_name = Column(String(100))
+    email = Column(String(255), nullable=True)
+    external_id = Column(String(255), nullable=True, index=True)
     groups = Column(JSON)  # list[str]
+    roles = Column(JSON)  # list[str]
     provider = Column(String(20))
+    is_active = Column(Boolean, default=True)
+    last_login_at = Column(String(50), nullable=True)
+
+
+class DBAuthSession(Base):
+    __tablename__ = "auth_sessions"
+    session_id = Column(String(50), primary_key=True)
+    token_hash = Column(String(64), unique=True, index=True)
+    user_id = Column(String(50), index=True)
+    provider = Column(String(20))
+    created_at = Column(String(50))
+    expires_at = Column(String(50), index=True)
+    revoked_at = Column(String(50), nullable=True)
+
+
+class DBRole(Base):
+    __tablename__ = "roles"
+    name = Column(String(80), primary_key=True)
+    permissions = Column(JSON)  # list[dict], {"action": "...", "resource_type": "...", "resource_id": "*"}
+    description = Column(Text)
+    built_in = Column(Boolean, default=False)
 
 class DBSandbox(Base):
     __tablename__ = "sandboxes"
@@ -18,6 +42,7 @@ class DBSandbox(Base):
     name = Column(String(255))
     tables = Column(JSON)  # list[str]
     allowed_groups = Column(JSON)  # list[str]
+    allowed_roles = Column(JSON)  # list[str]
     business_knowledge = Column(JSON)  # list[dict]
     uploads = Column(JSON)  # dict[str, list[dict]]
     upload_paths = Column(JSON)  # dict[str, str]

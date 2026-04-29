@@ -137,6 +137,7 @@
     const response = await fetch(`/api/reports/iterations/${encodeURIComponent(iterationId)}`, {
       method: "GET",
       headers,
+      credentials: "include",
     });
     if (!response.ok) {
       throw new Error(`${t(lang, "loadFailed")}: ${response.status}`);
