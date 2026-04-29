@@ -181,6 +181,64 @@ function normalizeStaticText() {
   if (navKnowledge) navKnowledge.textContent = i18n.t("nav_knowledge") || "知识库配置";
 }
 
+function getWorkspaceTabFromUrl() {
+  const url = new URL(window.location.href);
+  const value = (url.searchParams.get("workspace_tab") || "analysis").trim();
+  return ["analysis", "sql", "knowledge"].includes(value) ? value : "analysis";
+}
+
+function setWorkspaceTabInUrl(tab) {
+  const url = new URL(window.location.href);
+  if (!tab || tab === "analysis") url.searchParams.delete("workspace_tab");
+  else url.searchParams.set("workspace_tab", tab);
+  window.history.replaceState({}, "", url.toString());
+}
+
+function setWorkspaceTab(tab, updateUrl = true) {
+  const appContainer = document.querySelector(".app-container");
+  const panel = document.getElementById("workspaceTabPanel");
+  const frame = document.getElementById("workspaceTabFrame");
+  const links = Array.from(document.querySelectorAll("[data-workspace-tab]"));
+  const activeLink = links.find(link => link.dataset.workspaceTab === tab);
+
+  links.forEach(link => {
+    const isActive = link.dataset.workspaceTab === tab;
+    link.classList.toggle("active", isActive);
+    link.setAttribute("aria-current", isActive ? "page" : "false");
+  });
+
+  if (!appContainer || !panel || !frame) return;
+
+  if (tab === "analysis" || !activeLink) {
+    appContainer.classList.remove("workspace-tab-active");
+    panel.setAttribute("aria-hidden", "true");
+    if (updateUrl) setWorkspaceTabInUrl("analysis");
+    return;
+  }
+
+  const src = activeLink.dataset.workspaceSrc;
+  if (src && frame.getAttribute("src") !== src) {
+    frame.setAttribute("src", src);
+  }
+  appContainer.classList.add("workspace-tab-active");
+  panel.setAttribute("aria-hidden", "false");
+  if (updateUrl) setWorkspaceTabInUrl(tab);
+}
+
+function initWorkspaceTabs() {
+  document.querySelectorAll("[data-workspace-tab]").forEach(link => {
+    link.addEventListener("click", (event) => {
+      if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) {
+        return;
+      }
+      event.preventDefault();
+      setWorkspaceTab(link.dataset.workspaceTab || "analysis");
+    });
+  });
+
+  setWorkspaceTab(getWorkspaceTabFromUrl(), false);
+}
+
 function setSessionIdInUrl(value) {
   const url = new URL(window.location.href);
   if (value) url.searchParams.set("session_id", value);
@@ -3702,6 +3760,7 @@ refreshSkills();
 refreshSessions();
 
 normalizeStaticText();
+initWorkspaceTabs();
 
 refreshProfile();
 renderSkillContextSnapshot(null);

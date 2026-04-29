@@ -28,7 +28,7 @@
 
 <body>
 
-  <div class="app-container">
+  <div class="app-container workspace-shell">
 
     <header class="topbar">
 
@@ -43,9 +43,9 @@
       </div>
 
       <div class="nav-menu" style="flex: 1; display: flex; align-items: center; margin-left: 32px; gap: 24px;">
-        <a href="/dashboard" class="nav-link active" data-i18n="nav_analysis" style="color: #2b3a4a; text-decoration: none; font-weight: 600; font-size: 15px; border-bottom: 2px solid #ef4444; padding-bottom: 4px;">数据分析</a>
-        <a href="/sql-toolbox" class="nav-link" data-i18n="nav_sql_toolbox" style="color: #64748b; text-decoration: none; font-weight: 500; font-size: 15px; padding-bottom: 4px; transition: color 0.2s;" onmouseover="this.style.color='#2b3a4a'" onmouseout="this.style.color='#64748b'">SQL 工具箱</a>
-        <a href="/web/knowledge.html" class="nav-link" data-i18n="nav_knowledge" style="color: #64748b; text-decoration: none; font-weight: 500; font-size: 15px; padding-bottom: 4px; transition: color 0.2s;" onmouseover="this.style.color='#2b3a4a'" onmouseout="this.style.color='#64748b'">知识库配置</a>
+        <a href="/dashboard" class="nav-link active" data-workspace-tab="analysis" data-i18n="nav_analysis" style="color: #2b3a4a; text-decoration: none; font-weight: 600; font-size: 15px; border-bottom: 2px solid #ef4444; padding-bottom: 4px;">数据分析</a>
+        <a href="/sql-toolbox" class="nav-link" data-workspace-tab="sql" data-workspace-src="/sql-toolbox?embedded=1" data-i18n="nav_sql_toolbox" style="color: #64748b; text-decoration: none; font-weight: 500; font-size: 15px; padding-bottom: 4px; transition: color 0.2s;" onmouseover="this.style.color='#2b3a4a'" onmouseout="this.style.color='#64748b'">SQL 工具箱</a>
+        <a href="/web/knowledge.html" class="nav-link" data-workspace-tab="knowledge" data-workspace-src="/web/knowledge.html?embedded=1" data-i18n="nav_knowledge" style="color: #64748b; text-decoration: none; font-weight: 500; font-size: 15px; padding-bottom: 4px; transition: color 0.2s;" onmouseover="this.style.color='#2b3a4a'" onmouseout="this.style.color='#64748b'">知识库配置</a>
       </div>
       <div class="user-area" style="display: flex; align-items: center; gap: 12px;">
 
@@ -317,6 +317,10 @@
 
       </aside>
 
+    </div>
+
+    <div id="workspaceTabPanel" class="workspace-tab-panel" aria-hidden="true">
+      <iframe id="workspaceTabFrame" class="workspace-tab-frame" title="Workspace Tab"></iframe>
     </div>
 
   </div>

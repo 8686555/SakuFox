@@ -238,6 +238,14 @@ const i18n = {
   }
 };
 
+function applyEmbeddedPageMode() {
+  const params = new URLSearchParams(window.location.search);
+  if (!params.has("embedded")) return;
+  document.body.classList.add("embedded-page");
+}
+
+applyEmbeddedPageMode();
+
 async function api(path, options = {}) {
   const headers = {
     "Content-Type": "application/json",
