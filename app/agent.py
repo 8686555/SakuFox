@@ -1975,6 +1975,27 @@ def _build_loop_rounds_summary(loop_rounds: list[dict]) -> str:
     return "\n\n".join(sections) or "No completed rounds."
 
 
+def _extract_execution_warnings(execution: dict) -> list[str]:
+    warnings: list[str] = []
+    seen: set[str] = set()
+    if not isinstance(execution, dict):
+        return warnings
+    for candidate in (execution.get("warning"), execution.get("template_warning")):
+        text = str(candidate or "").strip()
+        if text and text not in seen:
+            seen.add(text)
+            warnings.append(text)
+    for step_result in execution.get("step_results", []) or []:
+        if not isinstance(step_result, dict):
+            continue
+        for key in ("warning", "error"):
+            text = str(step_result.get(key) or "").strip()
+            if text and text not in seen:
+                seen.add(text)
+                warnings.append(text)
+    return warnings
+
+
 def _build_fallback_auto_report(message: str, loop_rounds: list[dict], stop_reason: str) -> str:
     is_en = get_lang() == "en"
     findings: list[str] = []

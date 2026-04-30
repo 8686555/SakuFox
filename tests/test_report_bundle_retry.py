@@ -128,6 +128,49 @@ def test_report_bundle_prompt_lets_html_follow_iteration_results(monkeypatch):
     assert "cards, metric callouts" not in captured["user_prompt"]
 
 
+def test_report_bundle_prompt_includes_iteration_warnings(monkeypatch):
+    monkeypatch.setattr(
+        agent_module,
+        "generate_auto_analysis_report",
+        lambda **kwargs: "## 自选洞察\n- done",
+    )
+
+    captured = {}
+
+    def fake_openai(system_prompt, user_prompt, model, config):
+        captured["user_prompt"] = user_prompt
+        yield _bundle_response("<!doctype html><html><body><h1>有告警报告</h1></body></html>")
+
+    monkeypatch.setattr(agent_module, "_call_openai_protocol", fake_openai)
+
+    bundle = agent_module.generate_auto_analysis_report_bundle(
+        message="测试自动分析",
+        session_history=[],
+        business_knowledge=[],
+        session_patches=[],
+        loop_rounds=[
+            {
+                "round": 1,
+                "prompt": "warning round",
+                "result": {"steps": [], "conclusions": [], "action_items": []},
+                "execution": {
+                    "warning": "字段缺失",
+                    "step_results": [{"warning": "字段缺失"}, {"error": "步骤失败"}],
+                },
+            }
+        ],
+        chart_specs=[{"xAxis": {}, "yAxis": {}, "series": []}],
+        final_result_rows=[],
+        stop_reason="model_stopped_using_tools",
+        rounds_completed=1,
+        provider="openai",
+    )
+
+    assert "有告警报告" in bundle["html_document"]
+    assert "字段缺失" in captured["user_prompt"]
+    assert "步骤失败" in captured["user_prompt"]
+
+
 def test_build_polished_report_sections_skips_placeholder_only_sections():
     markdown = (
         "# 票价影响因素分析报告\n"
