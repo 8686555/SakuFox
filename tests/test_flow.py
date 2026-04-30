@@ -935,6 +935,63 @@ def test_iterate_runtime_error_is_localized_and_does_not_raise_unboundlocal(monk
     assert "连续 3 次都未生成合格的 HTML 报告" in error_event["message"]
 
 
+def test_iterate_accepts_configurable_max_rounds(monkeypatch):
+    headers = _login_admin()
+
+    def fake_run_analysis_iteration(*, message, sandbox, iteration_history, business_knowledge, provider=None, model=None):
+        yield {
+            "type": "result",
+            "data": {
+                "steps": [{"tool": "sql", "code": "SELECT * FROM tutorial_flights LIMIT 1"}],
+                "conclusions": [{"text": "still iterating", "confidence": 0.6}],
+                "hypotheses": [],
+                "action_items": [],
+                "tools_used": ["execute_select_sql"],
+                "explanation": "keep going",
+                "final_report_outline": [],
+            },
+        }
+
+    monkeypatch.setattr(main_module, "run_analysis_iteration", fake_run_analysis_iteration)
+
+    res = client.post(
+        "/api/chat/iterate",
+        headers=headers,
+        json={
+            "sandbox_id": "sb_flights_overview",
+            "message": "iterate cap",
+            "provider": "mock",
+            "max_rounds": 1,
+        },
+    )
+
+    assert res.status_code == 200
+    events = _parse_ndjson_events(res.text)
+    complete_event = next(event for event in events if event["type"] == "iteration_complete")
+    assert complete_event["data"]["max_rounds"] == 1
+    assert complete_event["data"]["rounds_completed"] == 1
+    assert complete_event["data"]["stop_reason"] == "max_rounds_reached"
+
+
+def test_iterate_rejects_max_rounds_above_configured_limit(monkeypatch):
+    headers = _login_admin()
+    monkeypatch.setenv("ANALYSIS_MAX_ROUNDS_LIMIT", "1")
+
+    res = client.post(
+        "/api/chat/iterate",
+        headers=headers,
+        json={
+            "sandbox_id": "sb_flights_overview",
+            "message": "too many rounds",
+            "provider": "mock",
+            "max_rounds": 2,
+        },
+    )
+
+    assert res.status_code == 400
+    assert "1" in res.json()["detail"]
+
+
 def test_propose_skill_from_auto_analysis_returns_snapshot_and_non_empty_fields(monkeypatch):
     headers = _login_admin()
 
@@ -1044,6 +1101,57 @@ def test_auto_analyze_marks_max_rounds_hit(monkeypatch):
     assert res.status_code == 200
     events = _parse_ndjson_events(res.text)
     complete_event = next(event for event in events if event["type"] == "analysis_complete")
+    assert complete_event["data"]["max_rounds_hit"] is True
+    assert complete_event["data"]["stop_reason"] == "max_rounds_reached"
+
+
+def test_auto_analyze_uses_configured_default_max_rounds(monkeypatch):
+    headers = _login_admin()
+    monkeypatch.setenv("AUTO_ANALYZE_MAX_ROUNDS", "1")
+    monkeypatch.setenv("ANALYSIS_MAX_ROUNDS_LIMIT", "3")
+
+    def fake_run_analysis_iteration(*, message, sandbox, iteration_history, business_knowledge, provider=None, model=None):
+        yield {
+            "type": "result",
+            "data": {
+                "steps": [{"tool": "sql", "code": "SELECT * FROM tutorial_flights LIMIT 1"}],
+                "conclusions": [{"text": "still working", "confidence": 0.6}],
+                "hypotheses": [],
+                "action_items": [],
+                "tools_used": ["execute_select_sql"],
+                "explanation": "keep going",
+                "final_report_outline": [],
+            },
+        }
+
+    monkeypatch.setattr(main_module, "run_analysis_iteration", fake_run_analysis_iteration)
+    monkeypatch.setattr(
+        main_module,
+        "generate_auto_analysis_report_bundle",
+        lambda **kwargs: {
+            "title": "Auto Report",
+            "summary": "partial",
+            "html_document": "<!doctype html><html><body><h1>partial</h1></body></html>",
+            "chart_bindings": [],
+            "legacy_markdown": "## Executive Summary\n- partial",
+        },
+    )
+    monkeypatch.setattr(main_module, "generate_auto_analysis_report", lambda **kwargs: "## Executive Summary\n- partial")
+
+    res = client.post(
+        "/api/chat/auto-analyze",
+        headers=headers,
+        json={
+            "sandbox_id": "sb_flights_overview",
+            "message": "auto analyze configured default cap",
+            "provider": "mock",
+        },
+    )
+
+    assert res.status_code == 200
+    events = _parse_ndjson_events(res.text)
+    complete_event = next(event for event in events if event["type"] == "analysis_complete")
+    assert complete_event["data"]["max_rounds"] == 1
     assert complete_event["data"]["max_rounds_hit"] is True
     assert complete_event["data"]["stop_reason"] == "max_rounds_reached"
 

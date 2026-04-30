@@ -79,6 +79,55 @@ def test_report_bundle_wraps_html_fragment_without_retry(monkeypatch):
     assert "data-chart-id=\"chart_1\"" in html_text
 
 
+def test_auto_report_prompt_does_not_force_fixed_sections(monkeypatch):
+    captured = {}
+
+    def fake_openai(system_prompt, user_prompt, model, config):
+        captured["system_prompt"] = system_prompt
+        captured["user_prompt"] = user_prompt
+        yield "## 自选洞察\n- done"
+
+    monkeypatch.setattr(agent_module, "_call_openai_protocol", fake_openai)
+
+    report = agent_module.generate_auto_analysis_report(
+        message="测试自动分析",
+        loop_rounds=[],
+        business_knowledge=[],
+        stop_reason="model_stopped_using_tools",
+        provider="openai",
+    )
+
+    assert "自选洞察" in report
+    assert "exactly these sections" not in captured["user_prompt"]
+    assert "Executive Summary" not in captured["user_prompt"]
+    assert "choose the sections" in captured["user_prompt"]
+
+
+def test_report_bundle_prompt_lets_html_follow_iteration_results(monkeypatch):
+    monkeypatch.setattr(
+        agent_module,
+        "generate_auto_analysis_report",
+        lambda **kwargs: "## 自选洞察\n- done",
+    )
+
+    captured = {}
+
+    def fake_openai(system_prompt, user_prompt, model, config):
+        captured["system_prompt"] = system_prompt
+        captured["user_prompt"] = user_prompt
+        yield _bundle_response("<!doctype html><html><body><h1>自选报告</h1></body></html>")
+
+    monkeypatch.setattr(agent_module, "_call_openai_protocol", fake_openai)
+
+    bundle = _run_bundle_generation()
+
+    assert "自选报告" in bundle["html_document"]
+    assert "fixed report template" in captured["system_prompt"]
+    assert "Structured iteration results" in captured["user_prompt"]
+    assert "REQUIRED:" not in captured["user_prompt"]
+    assert "cards, metric callouts" not in captured["user_prompt"]
+
+
 def test_build_polished_report_sections_skips_placeholder_only_sections():
     markdown = (
         "# 票价影响因素分析报告\n"

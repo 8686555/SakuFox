@@ -2350,8 +2350,6 @@ async function handleAutoAnalyze() {
 
     selected_tables: checkedTables.length > 0 ? checkedTables : null,
 
-    max_rounds: 100,
-
     trace_mode: "full"
 
   };

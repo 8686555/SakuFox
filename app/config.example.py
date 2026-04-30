@@ -17,6 +17,9 @@ ANTHROPIC_ENDPOINT = ""
 ANTHROPIC_MODEL = "glm-5"
 ANTHROPIC_VERSION = ""
 MAX_SELECTED_TABLES = 5
+DEFAULT_ITERATE_MAX_ROUNDS = 8
+DEFAULT_AUTO_ANALYZE_MAX_ROUNDS = 100
+ANALYSIS_MAX_ROUNDS_LIMIT = 100
 
 # --- Database Configuration ---
 DEFAULT_DB_TYPE = "sqlite"
@@ -175,6 +178,9 @@ class AppConfig:
     anthropic_model: str
     anthropic_version: str
     max_selected_tables: int
+    iterate_max_rounds: int
+    auto_analyze_max_rounds: int
+    analysis_max_rounds_limit: int
     iteration_system_prompt: str
     insight_prompt_metrics: str
     insight_prompt_anomaly: str
@@ -233,6 +239,39 @@ def load_config() -> AppConfig:
         max_selected_tables = max(1, int(max_selected_tables_raw))
     except ValueError:
         max_selected_tables = 5
+    analysis_max_rounds_limit = max(
+        1,
+        _pick_int(
+            os.getenv("ANALYSIS_MAX_ROUNDS_LIMIT", ""),
+            dotenv.get("ANALYSIS_MAX_ROUNDS_LIMIT", ""),
+            str(ANALYSIS_MAX_ROUNDS_LIMIT),
+            default=ANALYSIS_MAX_ROUNDS_LIMIT,
+        ),
+    )
+    iterate_max_rounds = min(
+        analysis_max_rounds_limit,
+        max(
+            1,
+            _pick_int(
+                os.getenv("ITERATE_MAX_ROUNDS", ""),
+                dotenv.get("ITERATE_MAX_ROUNDS", ""),
+                str(DEFAULT_ITERATE_MAX_ROUNDS),
+                default=DEFAULT_ITERATE_MAX_ROUNDS,
+            ),
+        ),
+    )
+    auto_analyze_max_rounds = min(
+        analysis_max_rounds_limit,
+        max(
+            1,
+            _pick_int(
+                os.getenv("AUTO_ANALYZE_MAX_ROUNDS", ""),
+                dotenv.get("AUTO_ANALYZE_MAX_ROUNDS", ""),
+                str(DEFAULT_AUTO_ANALYZE_MAX_ROUNDS),
+                default=DEFAULT_AUTO_ANALYZE_MAX_ROUNDS,
+            ),
+        ),
+    )
     return AppConfig(
         llm_provider=_pick(LLM_PROVIDER, os.getenv("LLM_PROVIDER", ""), dotenv.get("LLM_PROVIDER", ""), default="mock").lower(),
         openai_api_key=_pick(OPENAI_API_KEY, os.getenv("OPENAI_API_KEY", ""), dotenv.get("OPENAI_API_KEY", "")),
@@ -245,6 +284,9 @@ def load_config() -> AppConfig:
         anthropic_model=_pick(ANTHROPIC_MODEL, os.getenv("ANTHROPIC_MODEL", ""), dotenv.get("ANTHROPIC_MODEL", ""), default="claude-3-5-sonnet-latest"),
         anthropic_version=_pick(ANTHROPIC_VERSION, os.getenv("ANTHROPIC_VERSION", ""), dotenv.get("ANTHROPIC_VERSION", ""), default="2023-06-01"),
         max_selected_tables=max_selected_tables,
+        iterate_max_rounds=iterate_max_rounds,
+        auto_analyze_max_rounds=auto_analyze_max_rounds,
+        analysis_max_rounds_limit=analysis_max_rounds_limit,
         iteration_system_prompt=_pick(ITERATION_SYSTEM_PROMPT, os.getenv("ITERATION_SYSTEM_PROMPT", ""), dotenv.get("ITERATION_SYSTEM_PROMPT", "")),
         insight_prompt_metrics=_pick(INSIGHT_PROMPT_METRICS, os.getenv("INSIGHT_PROMPT_METRICS", ""), dotenv.get("INSIGHT_PROMPT_METRICS", "")),
         insight_prompt_anomaly=_pick(INSIGHT_PROMPT_ANOMALY, os.getenv("INSIGHT_PROMPT_ANOMALY", ""), dotenv.get("INSIGHT_PROMPT_ANOMALY", "")),

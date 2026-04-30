@@ -32,6 +32,8 @@
   "error_db_config": "DB configuration error",
   "msg_db_registered": "Database connection registered. External DB will be used in the next iteration.",
   "error_max_tables": "Can select up to {max} tables",
+  "error_min_rounds": "Analysis rounds must be at least 1",
+  "error_max_rounds": "Analysis rounds can be at most {max}",
   "error_empty_code": "Empty code",
   "error_select_only": "Only SELECT queries are allowed",
   "error_danger_op": "SQL contains dangerous operations",

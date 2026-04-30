@@ -32,6 +32,8 @@
   "error_db_config": "连接配置错误",
   "msg_db_registered": "数据库连接已注册，下次迭代将自动使用外部数据库",
   "error_max_tables": "最多只能选择 {max} 张表",
+  "error_min_rounds": "迭代轮次至少为 1",
+  "error_max_rounds": "迭代轮次最多为 {max}",
   "error_empty_code": "空代码",
   "error_select_only": "仅允许 SELECT 查询",
   "error_danger_op": "SQL 包含危险操作",

@@ -63,8 +63,6 @@ from app.tools import execute_select_sql_with_mask
 from app.sql_guard import enforce_select_only, enforce_table_whitelist, extract_tables
 from app.store import User, store
 
-ITERATE_MAX_ROUNDS = 8
-
 app = FastAPI(title=t("app_title", default="SakuFox 🦊 - 敏捷智能数据分析平台"))
 web_dir = Path(__file__).resolve().parent.parent / "web"
 app.mount("/web", StaticFiles(directory=str(web_dir)), name="web")
@@ -1413,6 +1411,7 @@ def _build_auto_iteration_payload(
         "report_meta": {
             "stop_reason": stop_reason,
             "rounds_completed": len(loop_rounds),
+            "max_rounds": max_rounds,
             "max_rounds_hit": max_rounds_hit,
             "report_generated": bool(final_report_html or final_report_summary),
         },
@@ -1508,6 +1507,11 @@ def iterate(req: IterateRequest, user: User = Depends(get_current_user)):
         raise HTTPException(status_code=403, detail=str(exc))
 
     config = load_config()
+    max_rounds = _resolve_analysis_max_rounds(
+        req.max_rounds,
+        config.iterate_max_rounds,
+        config.analysis_max_rounds_limit,
+    )
     session_id, session = store.get_or_create_session(user.user_id, req.session_id)
 
     # Auto-title the session from the first message and track sandbox_id
@@ -1566,7 +1570,7 @@ def iterate(req: IterateRequest, user: User = Depends(get_current_user)):
                 business_knowledge=business_knowledge,
                 provider=req.provider,
                 model=req.model,
-                max_rounds=ITERATE_MAX_ROUNDS,
+                max_rounds=max_rounds,
                 mode="iterate",
             )
             loop_rounds: list[dict] = []
@@ -1642,6 +1646,7 @@ def iterate(req: IterateRequest, user: User = Depends(get_current_user)):
                 "report_meta": {
                     "stop_reason": stop_reason,
                     "rounds_completed": len(loop_rounds),
+                    "max_rounds": max_rounds,
                     "max_rounds_hit": stop_reason == "max_rounds_reached",
                 },
             }
@@ -1678,6 +1683,7 @@ def iterate(req: IterateRequest, user: User = Depends(get_current_user)):
                     "proposal_id": proposal_id,
                     "result_count": len(result_rows),
                     "rounds_completed": len(loop_rounds),
+                    "max_rounds": max_rounds,
                     "stop_reason": stop_reason,
                     "knowledge_sources": knowledge_sources,
                 },
@@ -1705,6 +1711,11 @@ def auto_analyze(req: AutoAnalyzeRequest, user: User = Depends(get_current_user)
         raise HTTPException(status_code=403, detail=str(exc))
 
     config = load_config()
+    max_rounds = _resolve_analysis_max_rounds(
+        req.max_rounds,
+        config.auto_analyze_max_rounds,
+        config.analysis_max_rounds_limit,
+    )
     session_id, session = store.get_or_create_session(user.user_id, req.session_id)
     incoming_message = str(req.message or "").strip()
 
@@ -1760,7 +1771,7 @@ def auto_analyze(req: AutoAnalyzeRequest, user: User = Depends(get_current_user)
                 business_knowledge=business_knowledge,
                 provider=req.provider,
                 model=req.model,
-                max_rounds=req.max_rounds,
+                max_rounds=max_rounds,
                 mode="auto",
             )
 
@@ -1830,6 +1841,7 @@ def auto_analyze(req: AutoAnalyzeRequest, user: User = Depends(get_current_user)
                     "html_document": report_bundle.get("html_document", ""),
                     "stop_reason": stop_reason,
                     "rounds_completed": len(loop_rounds),
+                    "max_rounds": max_rounds,
                 },
             }, ensure_ascii=False) + "\n"
 
@@ -1842,7 +1854,7 @@ def auto_analyze(req: AutoAnalyzeRequest, user: User = Depends(get_current_user)
                 loop_rounds=loop_rounds,
                 report_bundle=report_bundle,
                 stop_reason=stop_reason,
-                max_rounds=req.max_rounds,
+                max_rounds=max_rounds,
             )
             last_result = (loop_rounds[-1].get("result") if loop_rounds else {}) or {}
 
@@ -1880,6 +1892,7 @@ def auto_analyze(req: AutoAnalyzeRequest, user: User = Depends(get_current_user)
                     "proposal_id": proposal_id,
                     "stop_reason": stop_reason,
                     "rounds_completed": len(loop_rounds),
+                    "max_rounds": max_rounds,
                     "max_rounds_hit": iteration_payload.get("report_meta", {}).get("max_rounds_hit", False),
                     "result_count": len(_get_last_result_rows(loop_rounds)),
                     "report_url": report_url,
@@ -2936,6 +2949,32 @@ def _resolve_selected_tables(requested_tables: list[str] | None, sandbox: dict, 
     if denied:
         raise HTTPException(status_code=403, detail=t("error_no_permission_tables", tables=', '.join(denied), default=f"无权选择表: {', '.join(denied)}"))
     return normalized
+
+
+def _resolve_analysis_max_rounds(
+    requested_rounds: int | None,
+    default_rounds: int,
+    max_rounds_limit: int,
+) -> int:
+    try:
+        resolved_rounds = int(requested_rounds if requested_rounds is not None else default_rounds)
+    except (TypeError, ValueError):
+        resolved_rounds = default_rounds
+    if resolved_rounds < 1:
+        raise HTTPException(
+            status_code=400,
+            detail=t("error_min_rounds", default="迭代轮次至少为 1"),
+        )
+    if resolved_rounds > max_rounds_limit:
+        raise HTTPException(
+            status_code=400,
+            detail=t(
+                "error_max_rounds",
+                max=max_rounds_limit,
+                default=f"迭代轮次最多为 {max_rounds_limit}",
+            ),
+        )
+    return resolved_rounds
 
 # ── Sandbox Workspace Management ──────────────────────────────────────
 

@@ -16,6 +16,7 @@ class IterateRequest(BaseModel):
     session_id: str | None = None
     provider: str | None = Field(default=None, pattern="^(openai|anthropic|mock)$")
     model: str | None = None
+    max_rounds: int | None = Field(default=None, ge=1)
     selected_tables: list[str] | None = None
     selected_files: list[str] | None = None
     hypothesis_id: str | None = None  # pick a hypothesis from previous iteration
@@ -24,7 +25,7 @@ class IterateRequest(BaseModel):
 class AutoAnalyzeRequest(IterateRequest):
     """Run one-click autonomous multi-round analysis until the model stops using tools."""
     message: str = ""
-    max_rounds: int = Field(default=100, ge=1, le=100)
+    max_rounds: int | None = Field(default=None, ge=1)
     trace_mode: str = Field(default="full", pattern="^full$")
 
 

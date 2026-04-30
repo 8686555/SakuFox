@@ -990,6 +990,7 @@ def generate_auto_analysis_report(
     rounds_summary = _build_loop_rounds_summary(loop_rounds)
     system_prompt = (
         "You are a senior analytics lead. Turn multi-round SQL/Python analysis traces into a concise business report. "
+        "Let the evidence and iteration path determine the report structure. "
         "Do not invent evidence. If confidence is limited, say so explicitly."
     )
     user_prompt = (
@@ -998,40 +999,8 @@ def generate_auto_analysis_report(
         f"Business knowledge:\n{knowledge_block}\n\n"
         f"Auto-analysis rounds:\n{rounds_summary}\n\n"
         f"Write all content in {report_language}.\n\n"
-        "Write the final report in Markdown with exactly these sections:\n"
-        + (
-            "## Executive Summary\n"
-            "## Key Findings\n"
-            "## Evidence And Analysis Process\n"
-            "## Charts And Data Notes\n"
-            "## Business Recommendations\n"
-            "## Remaining Validation Questions\n"
-            if is_en
-            else "## 执行摘要\n"
-            "## 关键发现\n"
-            "## 证据与分析过程\n"
-            "## 图表与数据说明\n"
-            "## 业务建议\n"
-            "## 待验证问题\n"
-        )
-        + "Avoid code unless a very short snippet is necessary."
-    )
-    section_template = (
-        "## Executive Summary\n"
-        "## Key Findings\n"
-        "## Evidence And Analysis Process\n"
-        "## Charts And Data Notes\n"
-        "## Business Recommendations\n"
-        "## Remaining Validation Questions\n"
-    )
-    user_prompt = (
-        f"Original request:\n{message}\n\n"
-        f"Stop reason:\n{stop_reason}\n\n"
-        f"Business knowledge:\n{knowledge_block}\n\n"
-        f"Auto-analysis rounds:\n{rounds_summary}\n\n"
-        f"Write all content in {report_language}. Translate all section headings and list items into this language.\n\n"
-        "Write the final report in Markdown with exactly these sections (translated when required):\n"
-        f"{section_template}"
+        "Write the final report in Markdown, but choose the sections, heading names, emphasis, and level of detail yourself "
+        "based on what the completed iterations actually discovered. Use only sections that help explain the result clearly. "
         "Avoid code unless a very short snippet is necessary."
     )
     chunks = (
@@ -1088,12 +1057,34 @@ def generate_auto_analysis_report_bundle(
     history_block = "\n".join(history_lines) or "- N/A"
     chart_ids = [f"chart_{idx}" for idx, spec in enumerate(chart_specs[:20], start=1) if isinstance(spec, dict)]
     chart_hint = ", ".join(chart_ids) if chart_ids else "none"
-    required_chart_count = min(3, len(chart_ids))
     default_chart_bindings = [
         {"chart_id": f"chart_{idx}", "option": spec, "height": 360}
         for idx, spec in enumerate(chart_specs[:20], start=1)
         if isinstance(spec, dict)
     ]
+
+    iteration_materials: list[dict] = []
+    for round_payload in loop_rounds:
+        result = round_payload.get("result") or {}
+        execution = round_payload.get("execution") or {}
+        iteration_materials.append(
+            {
+                "round": round_payload.get("round"),
+                "focus": round_payload.get("prompt", "")[-1200:],
+                "tools_used": result.get("tools_used", []),
+                "steps": result.get("steps", []),
+                "conclusions": result.get("conclusions", []),
+                "hypotheses": result.get("hypotheses", []),
+                "action_items": result.get("action_items", []),
+                "explanation": result.get("explanation", ""),
+                "rows_preview": (execution.get("rows") or [])[:8],
+                "row_count": len(execution.get("rows") or []),
+                "chart_count": len(execution.get("chart_specs") or []),
+                "warnings": _extract_execution_warnings(execution),
+                "error": round_payload.get("error") or execution.get("error") or "",
+            }
+        )
+    iteration_materials_block = json.dumps(iteration_materials, ensure_ascii=False)[:30000]
 
     def _merge_loop_items(key: str, unique_key: str | None = None) -> list:
         output: list = []
@@ -1169,7 +1160,8 @@ def generate_auto_analysis_report_bundle(
 
     stage2_system_prompt = (
         "You are a principal analytics web designer. Produce only JSON with chart_bindings and html_document. "
-        "The html_document must be a polished standalone HTML report, not markdown rendered as plain text."
+        "Design the standalone HTML report from the completed iteration results themselves. "
+        "Do not follow a fixed report template; choose the structure, narrative flow, and visual treatment that best fit the evidence."
     )
     stage2_user_prompt = (
         "Return valid JSON only. No markdown fences.\n"
@@ -1189,19 +1181,20 @@ def generate_auto_analysis_report_bundle(
         f"Session patches:\n{patches_block}\n\n"
         f"Session history summary:\n{history_block}\n\n"
         f"Loop rounds:\n{summary_rounds}\n\n"
+        f"Structured iteration results:\n{iteration_materials_block}\n\n"
         f"Final result rows preview:\n{rows_preview}\n\n"
         f"Output language requirement: {report_language}. Keep title/summary/body in this language.\n\n"
         "Chart mounting rule:\n"
-        "- Place chart nodes in html_document with data-chart-id=\"...\".\n"
         f"- Available chart ids: {chart_hint}.\n"
-        f"- REQUIRED: include at least {required_chart_count} chart placeholder nodes when chart ids are available.\n"
-        "- chart_bindings should map chart_id to ECharts option and height.\n\n"
+        "- When a chart supports the story you choose, place a chart node in html_document with data-chart-id=\"...\".\n"
+        "- chart_bindings should map every used chart_id to an ECharts option and height.\n"
+        "- You may omit irrelevant charts, but do not invent chart ids.\n\n"
         "HTML quality requirements:\n"
         "- Return a complete standalone HTML document with <!doctype html>, <html>, <head>, <style>, and <body>.\n"
-        "- Use polished CSS, cards, metric callouts, section dividers, and readable tables.\n"
+        "- Make it beautiful, readable, and suited to the analysis outcome; decide the layout, sections, typography, emphasis, and visual rhythm yourself.\n"
         "- Do NOT include raw Markdown syntax anywhere in visible text: no ## headings, no **bold**, no pipe tables like | a | b |, and no ``` fences.\n"
         "- Convert any tabular content into real <table><thead><tbody> HTML.\n"
-        "- Prefer a visually rich executive report layout over a plain document."
+        "- Keep content faithful to the iteration evidence; do not add unsupported claims."
     )
     stage2_chunks = (
         _call_openai_protocol(system_prompt=stage2_system_prompt, user_prompt=stage2_user_prompt, model=model, config=config)
@@ -1525,20 +1518,20 @@ def _generate_html_document_by_llm(
     chart_hint = ", ".join(chart_ids) if chart_ids else "none"
     system_prompt = (
         "You are a data-report web designer. Return a standalone HTML document only. "
-        "Use semantic layout and polished CSS. Do not include JavaScript."
+        "Choose the HTML structure and visual style based on the source report content. Do not include JavaScript."
     )
     user_prompt = (
         "Convert the following report content into a complete HTML document.\n"
         "Requirements:\n"
         "- Return only HTML text.\n"
-        "- Use clear visual hierarchy.\n"
-        "- Use polished CSS, cards, metric callouts, section dividers, and real HTML tables.\n"
+        "- Use clear visual hierarchy and polished CSS that fit the analysis outcome.\n"
+        "- Decide the layout, sectioning, emphasis, and table treatment yourself; do not force a fixed report template.\n"
         "- Do NOT include raw Markdown syntax in visible text: no ##, no **bold**, no |---| pipe tables, and no ``` fences.\n"
         "- Convert any markdown table into a real <table><thead><tbody> structure.\n"
         "- Keep content faithful to source.\n"
         f"- Use {report_language} for the whole document text.\n"
-        "- You MUST include chart placeholders using available chart ids: <div data-chart-id=\"...\"></div>.\n"
-        f"- REQUIRED: include at least {min(3, len(chart_ids))} chart placeholders when chart ids are available.\n"
+        "- Include chart placeholders using available chart ids when they support the report story: <div data-chart-id=\"...\"></div>.\n"
+        "- Do not invent chart ids.\n"
         f"Available chart ids: {chart_hint}\n\n"
         f"Source report markdown:\n{fallback_markdown}\n"
     )
