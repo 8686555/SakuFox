@@ -265,6 +265,15 @@ class NotebookKernel:
         def query_knowledge_index_helper(query: str, top_k: int = 5) -> list[dict]:
             return store.search_knowledge_index(query=str(query or ""), sandbox_id=self.sandbox_id, top_k=top_k)
 
+        def query_semantic_layer_helper(query: str, top_k: int = 5) -> list[dict]:
+            return store.query_semantic_layer(query=str(query or ""), sandbox_id=self.sandbox_id, top_k=top_k)
+
+        def query_experience_index_helper(query: str, top_k: int = 5) -> list[dict]:
+            return store.query_experience_index(query=str(query or ""), sandbox_id=self.sandbox_id, top_k=top_k)
+
+        def query_document_sources_helper(query: str, top_k: int = 5) -> list[dict]:
+            return store.query_document_sources(query=str(query or ""), sandbox_id=self.sandbox_id, top_k=top_k)
+
         def read_knowledge_asset_helper(asset_id: str, mode: str = "preview", cursor: str | None = None, limit: int = 6000) -> dict:
             allowed_asset_ids = store.get_runtime_asset_ids(self.sandbox_id)
             if str(asset_id or "") not in allowed_asset_ids:
@@ -285,6 +294,9 @@ class NotebookKernel:
                 "list_temp_tables": list_temp_tables_helper,
                 "describe_table": describe_table_helper,
                 "query_knowledge_index": query_knowledge_index_helper,
+                "query_semantic_layer": query_semantic_layer_helper,
+                "query_experience_index": query_experience_index_helper,
+                "query_document_sources": query_document_sources_helper,
                 "read_knowledge_asset": read_knowledge_asset_helper,
                 "last_sql_rows": self.shared_namespace.get("last_sql_rows", []),
                 "last_sql_df": self.shared_namespace.get("last_sql_df", pd.DataFrame()),

@@ -2,6 +2,9 @@ document.addEventListener("DOMContentLoaded", async () => {
   const state = {
     assets: [],
     pendingExperiences: [],
+    documents: [],
+    semanticPages: [],
+    reviewItems: [],
     filtered: [],
     activeType: "all",
     selectedId: "",
@@ -20,6 +23,9 @@ document.addEventListener("DOMContentLoaded", async () => {
   const statGrid = document.getElementById("statGrid");
   const userInfo = document.getElementById("userInfo");
   const btnCreateKb = document.getElementById("btnCreateKb");
+  const documentSourceList = document.getElementById("documentSourceList");
+  const semanticPageList = document.getElementById("semanticPageList");
+  const reviewItemList = document.getElementById("reviewItemList");
 
   const typeDefs = [
     { key: "all", label: "全部资产" },
@@ -71,11 +77,16 @@ document.addEventListener("DOMContentLoaded", async () => {
     const mountedCount = assets.reduce((sum, asset) => sum + (asset.mounted_sandboxes || []).length, 0);
     const searchable = assets.filter(asset => (asset.chunk_count || 0) > 0).length;
     const pendingCount = state.pendingExperiences.length;
+    const documentCount = state.documents.length;
+    const semanticCount = state.semanticPages.length;
+    const reviewCount = state.reviewItems.length;
     const stats = [
       ["资产总数", assets.length],
       ["已挂载工作空间", mountedCount],
       ["可检索资产", searchable],
-      ["待确认经验", pendingCount],
+      ["文档来源", documentCount],
+      ["语义页面", semanticCount],
+      ["待审核", pendingCount + reviewCount],
     ];
     statGrid.innerHTML = stats.map(([label, value]) => `
       <div class="stat-card">
@@ -83,6 +94,38 @@ document.addEventListener("DOMContentLoaded", async () => {
         <div class="stat-value">${value}</div>
       </div>
     `).join("");
+  }
+
+  function renderSemanticWorkbench() {
+    if (documentSourceList) {
+      documentSourceList.innerHTML = state.documents.length ? state.documents.slice(0, 12).map(doc => `
+        <div class="semantic-mini-item">
+          <div class="semantic-mini-title">${escapeHtml(doc.filename)}</div>
+          <div class="semantic-mini-sub">status: ${escapeHtml(doc.parse_status || "")} · parser: ${escapeHtml(doc.parser || "")}</div>
+          ${doc.parse_error ? `<div class="semantic-mini-sub" style="color:#991b1b;">${escapeHtml(doc.parse_error)}</div>` : ""}
+        </div>
+      `).join("") : `<div class="empty-state" style="padding:16px;">暂无文档来源。</div>`;
+    }
+    if (semanticPageList) {
+      semanticPageList.innerHTML = state.semanticPages.length ? state.semanticPages.slice(0, 12).map(page => `
+        <div class="semantic-mini-item">
+          <div class="semantic-mini-title">${escapeHtml(page.title)}</div>
+          <div class="semantic-mini-sub">${escapeHtml(page.page_type)} · confidence ${escapeHtml(page.confidence || 0)}</div>
+        </div>
+      `).join("") : `<div class="empty-state" style="padding:16px;">暂无已发布语义页面。</div>`;
+    }
+    if (reviewItemList) {
+      reviewItemList.innerHTML = state.reviewItems.length ? state.reviewItems.slice(0, 12).map(item => `
+        <div class="semantic-mini-item" data-review-id="${escapeHtml(item.review_id)}">
+          <div class="semantic-mini-title">${escapeHtml(item.title)}</div>
+          <div class="semantic-mini-sub">${escapeHtml(item.proposed_payload?.page_type || item.item_type || "")} · ${escapeHtml(item.message || "")}</div>
+          <div class="row-actions" style="margin-top:10px;">
+            <button class="btn btn-primary btn-sm btn-publish-review" data-review-id="${escapeHtml(item.review_id)}">发布</button>
+            <button class="btn btn-outline btn-sm btn-dismiss-review" data-review-id="${escapeHtml(item.review_id)}">驳回</button>
+          </div>
+        </div>
+      `).join("") : `<div class="empty-state" style="padding:16px;">暂无待审核语义草稿。</div>`;
+    }
   }
 
   function applyFilters() {
@@ -133,11 +176,11 @@ document.addEventListener("DOMContentLoaded", async () => {
         <div class="asset-virtual-item" style="top:${top}px;height:${assetVirtualState.itemHeight}px;">
           <article class="asset-card ${state.selectedId === asset.asset_id ? "active" : ""}" data-id="${asset.asset_id}">
             <div class="asset-top">
-              <div>
+              <div class="asset-main">
                 <h4 class="asset-title">${escapeHtml(asset.title)}</h4>
                 <p class="asset-sub">${escapeHtml(asset.description || asset.source_ref || "暂无描述")}</p>
               </div>
-              <span class="badge-pill ${badgeClass(asset)}">${statusText(asset)}</span>
+              <span class="asset-status-pill ${asset.index_status === "failed" ? "warn" : ""}" style="position:absolute;top:18px;right:20px;height:32px;min-height:32px;max-height:32px;line-height:32px;padding:0 12px;white-space:nowrap;writing-mode:horizontal-tb;">${statusText(asset)}</span>
             </div>
             <div class="badge-row" style="margin-top:auto;">
               <span class="badge-pill">${typeText(asset.asset_type)}</span>
@@ -543,22 +586,29 @@ last_error: ${escapeHtml(asset.last_error || "")}</div>
   }
 
   async function loadAll(selectedId = "") {
-    const [me, assetRes, sandboxRes, pendingRes] = await Promise.all([
+    const [me, assetRes, sandboxRes, pendingRes, documentRes, semanticRes, reviewRes] = await Promise.all([
       api("/api/me"),
       api("/api/knowledge/assets"),
       api("/api/sandboxes"),
       api("/api/knowledge/experiences/pending"),
+      api("/api/knowledge/documents"),
+      api("/api/knowledge/wiki/pages?status=published"),
+      api("/api/knowledge/wiki/review-items?status=pending"),
     ]);
     userInfo.textContent = `${me.user.display_name} (${(me.user.groups || []).join(", ")})`;
     state.assets = assetRes.assets || [];
     state.sandboxes = sandboxRes.sandboxes || [];
     state.pendingExperiences = pendingRes.pending_experiences || [];
+    state.documents = documentRes.documents || [];
+    state.semanticPages = semanticRes.pages || [];
+    state.reviewItems = reviewRes.review_items || [];
     const pendingAsset = state.pendingSourceRef
       ? state.assets.find(asset => asset.source_ref === state.pendingSourceRef)
       : null;
     state.selectedId = selectedId || pendingAsset?.asset_id || state.selectedId || (state.assets[0]?.asset_id || "");
     state.pendingSourceRef = "";
     renderStats();
+    renderSemanticWorkbench();
     renderPendingExperiences();
     renderTabs();
     applyFilters();
@@ -598,6 +648,27 @@ last_error: ${escapeHtml(asset.last_error || "")}</div>
       await loadAll(state.selectedId);
     }
   });
+  if (reviewItemList) {
+    reviewItemList.addEventListener("click", async event => {
+      const publishBtn = event.target.closest(".btn-publish-review");
+      if (publishBtn) {
+        await api(`/api/knowledge/wiki/review-items/${publishBtn.dataset.reviewId}/resolve`, {
+          method: "POST",
+          body: JSON.stringify({ action: "publish" }),
+        });
+        await loadAll(state.selectedId);
+        return;
+      }
+      const dismissBtn = event.target.closest(".btn-dismiss-review");
+      if (dismissBtn) {
+        await api(`/api/knowledge/wiki/review-items/${dismissBtn.dataset.reviewId}/resolve`, {
+          method: "POST",
+          body: JSON.stringify({ action: "dismiss" }),
+        });
+        await loadAll(state.selectedId);
+      }
+    });
+  }
   window.addEventListener("resize", () => {
     scheduleAssetVirtualRender();
     schedulePendingVirtualRender();

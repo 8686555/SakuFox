@@ -2911,9 +2911,18 @@ document.getElementById("uploadBtn").onclick = async () => {
 
         }
 
-        // Log to chat
-
-        addCard(i18n.t("upload_success"), `<div>${i18n.t('filename')}锛?{f.dataset_name}</div>${f.is_tabular ? `<div>${i18n.t('rows')}锛?{f.rows}</div><div>${i18n.t('cols')}锛?{f.columns.join(", ")}</div>` : `<div>${i18n.t('type_doc')}</div>`}<div>${i18n.t('auto_context')}</div>`);
+        const doc = f.document || null;
+        const documentMeta = doc
+          ? `<div>document: ${escapeHtml(doc.parse_status || "pending")} · ${escapeHtml(doc.parser || "")}</div>`
+          : "";
+        addCard(
+          i18n.t("upload_success"),
+          `<div>${i18n.t("filename")}: ${escapeHtml(f.dataset_name)}</div>${
+            f.is_tabular
+              ? `<div>${i18n.t("rows")}: ${f.rows}</div><div>${i18n.t("cols")}: ${escapeHtml((f.columns || []).join(", "))}</div>`
+              : `<div>${i18n.t("type_doc")}</div>${documentMeta}`
+          }<div>${i18n.t("auto_context")}</div>`,
+        );
 
       });
 

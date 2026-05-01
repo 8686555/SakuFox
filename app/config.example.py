@@ -20,6 +20,9 @@ MAX_SELECTED_TABLES = 5
 DEFAULT_ITERATE_MAX_ROUNDS = 8
 DEFAULT_AUTO_ANALYZE_MAX_ROUNDS = 100
 ANALYSIS_MAX_ROUNDS_LIMIT = 100
+DOCUMENT_PARSER = "mineru_local"
+MINERU_COMMAND = "mineru"
+DOCUMENT_PARSE_TIMEOUT_SECONDS = 120
 
 # --- Database Configuration ---
 DEFAULT_DB_TYPE = "sqlite"
@@ -101,8 +104,11 @@ ITERATION_SYSTEM_PROMPT = (
     "- datetime / date / timedelta: 日期类\n"
     "- Counter / defaultdict: collections 常用类\n"
     "- execute_select_sql(sql): 沙盒内执行 SQL，返回 list[dict]\n"
-    "- query_knowledge_index(query, top_k=5): 搜索当前工作空间已挂载的知识资产，返回命中的片段与 asset_id\n"
-    "- read_knowledge_asset(asset_id, mode='preview'): 读取命中知识资产的完整或分页内容\n"
+            "- query_knowledge_index(query, top_k=5): 搜索当前工作空间已挂载的知识资产，返回命中的片段与 asset_id\n"
+            "- query_semantic_layer(query, top_k=5): 搜索已发布的 Text2SQL 语义层（指标、字段、关联、过滤规则）\n"
+            "- query_experience_index(query, top_k=5): 搜索已发布的可复用分析经验\n"
+            "- query_document_sources(query, top_k=5): 搜索已解析上传文档片段，作为可追溯来源证据\n"
+            "- read_knowledge_asset(asset_id, mode='preview'): 读取命中知识资产的完整或分页内容\n"
     "- safe_first_row(df): 安全返回首行字典，空表时返回 None\n"
     "- safe_get_value(df, col, default=None): 安全获取某列某行的值，缺列或越界时返回默认值\n"
     "- safe_has_columns(df, *cols): 检查 DataFrame 是否同时包含多个列\n"
@@ -206,6 +212,9 @@ class AppConfig:
     ldap_group_name_regex: str
     oauth_providers: dict
     oauth_state_ttl_seconds: int
+    document_parser: str
+    mineru_command: str
+    document_parse_timeout_seconds: int
 
 
 def _pick_int(*values: str, default: int) -> int:
@@ -312,4 +321,15 @@ def load_config() -> AppConfig:
         ldap_group_name_regex=_pick(os.getenv("LDAP_GROUP_NAME_REGEX", ""), dotenv.get("LDAP_GROUP_NAME_REGEX", ""), LDAP_GROUP_NAME_REGEX, default=r"CN=([^,]+)"),
         oauth_providers=_pick_json(OAUTH_PROVIDERS, os.getenv("OAUTH_PROVIDERS", ""), dotenv.get("OAUTH_PROVIDERS", "")),
         oauth_state_ttl_seconds=_pick_int(os.getenv("OAUTH_STATE_TTL_SECONDS", ""), dotenv.get("OAUTH_STATE_TTL_SECONDS", ""), str(OAUTH_STATE_TTL_SECONDS), default=OAUTH_STATE_TTL_SECONDS),
+        document_parser=_pick(os.getenv("DOCUMENT_PARSER", ""), dotenv.get("DOCUMENT_PARSER", ""), DOCUMENT_PARSER, default="mineru_local"),
+        mineru_command=_pick(os.getenv("MINERU_COMMAND", ""), dotenv.get("MINERU_COMMAND", ""), MINERU_COMMAND, default="mineru"),
+        document_parse_timeout_seconds=max(
+            1,
+            _pick_int(
+                os.getenv("DOCUMENT_PARSE_TIMEOUT_SECONDS", ""),
+                dotenv.get("DOCUMENT_PARSE_TIMEOUT_SECONDS", ""),
+                str(DOCUMENT_PARSE_TIMEOUT_SECONDS),
+                default=DOCUMENT_PARSE_TIMEOUT_SECONDS,
+            ),
+        ),
     )

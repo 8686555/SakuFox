@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from sqlalchemy import Column, String, Text, JSON, DateTime, Integer, Boolean, ForeignKey, UniqueConstraint
+from sqlalchemy import Column, String, Text, JSON, DateTime, Integer, Boolean, ForeignKey, UniqueConstraint, Float
 from sqlalchemy.orm import declarative_base
 
 Base = declarative_base()
@@ -199,6 +199,125 @@ class DBKnowledgeIndexJob(Base):
     status = Column(String(20), index=True)  # running / success / failed
     message = Column(Text)
     stats = Column(JSON)
+    created_at = Column(String(50))
+    updated_at = Column(String(50))
+
+
+class DBUploadedDocument(Base):
+    __tablename__ = "uploaded_documents"
+
+    document_id = Column(String(50), primary_key=True)
+    sandbox_id = Column(String(50), index=True)
+    owner_id = Column(String(50), index=True, nullable=True)
+    filename = Column(String(500), index=True)
+    source_path = Column(String(1000))
+    content_type = Column(String(100))
+    parser = Column(String(50), default="text")
+    parse_status = Column(String(20), default="pending", index=True)
+    parse_error = Column(Text)
+    parsed_markdown_path = Column(String(1000))
+    parsed_json_path = Column(String(1000))
+    content_hash = Column(String(64), index=True)
+    metadata_json = Column(JSON)
+    created_at = Column(String(50))
+    updated_at = Column(String(50))
+
+
+class DBDocumentChunk(Base):
+    __tablename__ = "document_chunks"
+
+    chunk_id = Column(String(50), primary_key=True)
+    document_id = Column(String(50), index=True)
+    sandbox_id = Column(String(50), index=True)
+    chunk_index = Column(Integer, default=0)
+    chunk_text = Column(Text)
+    heading = Column(String(500))
+    page_number = Column(Integer, nullable=True)
+    locator = Column(String(1000))
+    keywords = Column(JSON)
+    embedding = Column(JSON)
+    content_hash = Column(String(64), index=True)
+    created_at = Column(String(50))
+    updated_at = Column(String(50))
+
+
+class DBDocumentParseJob(Base):
+    __tablename__ = "document_parse_jobs"
+
+    job_id = Column(String(50), primary_key=True)
+    document_id = Column(String(50), index=True)
+    status = Column(String(20), index=True)
+    message = Column(Text)
+    stats = Column(JSON)
+    created_at = Column(String(50))
+    updated_at = Column(String(50))
+
+
+class DBKnowledgeWikiPage(Base):
+    __tablename__ = "knowledge_wiki_pages"
+    __table_args__ = (
+        UniqueConstraint("sandbox_id", "slug", name="uq_knowledge_wiki_page_slug"),
+    )
+
+    page_id = Column(String(50), primary_key=True)
+    sandbox_id = Column(String(50), index=True)
+    page_type = Column(String(50), index=True)
+    slug = Column(String(200), index=True)
+    title = Column(String(500), index=True)
+    canonical_name = Column(String(500), index=True)
+    aliases = Column(JSON)
+    body_markdown = Column(Text)
+    frontmatter_json = Column(JSON)
+    source_document_id = Column(String(50), index=True, nullable=True)
+    source_chunk_id = Column(String(50), index=True, nullable=True)
+    source_asset_ids = Column(JSON)
+    confidence = Column(Float, default=0.5)
+    status = Column(String(20), default="draft", index=True)
+    created_by = Column(String(50), index=True, nullable=True)
+    published_at = Column(String(50), nullable=True)
+    created_at = Column(String(50))
+    updated_at = Column(String(50))
+
+
+class DBKnowledgeWikiRevision(Base):
+    __tablename__ = "knowledge_wiki_revisions"
+
+    revision_id = Column(String(50), primary_key=True)
+    page_id = Column(String(50), index=True)
+    action = Column(String(30), index=True)
+    before_json = Column(JSON)
+    after_json = Column(JSON)
+    reason = Column(Text)
+    operator_id = Column(String(50), index=True, nullable=True)
+    created_at = Column(String(50))
+
+
+class DBKnowledgeReviewItem(Base):
+    __tablename__ = "knowledge_review_items"
+
+    review_id = Column(String(50), primary_key=True)
+    sandbox_id = Column(String(50), index=True)
+    item_type = Column(String(50), index=True)
+    status = Column(String(20), default="pending", index=True)
+    title = Column(String(500), index=True)
+    proposed_payload = Column(JSON)
+    source_document_id = Column(String(50), index=True, nullable=True)
+    source_chunk_id = Column(String(50), index=True, nullable=True)
+    source_asset_id = Column(String(50), index=True, nullable=True)
+    message = Column(Text)
+    created_by = Column(String(50), index=True, nullable=True)
+    resolved_by = Column(String(50), index=True, nullable=True)
+    created_at = Column(String(50))
+    updated_at = Column(String(50))
+
+
+class DBKnowledgeLintRun(Base):
+    __tablename__ = "knowledge_lint_runs"
+
+    lint_id = Column(String(50), primary_key=True)
+    sandbox_id = Column(String(50), index=True, nullable=True)
+    status = Column(String(20), index=True)
+    findings = Column(JSON)
     created_at = Column(String(50))
     updated_at = Column(String(50))
 

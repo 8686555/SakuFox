@@ -300,6 +300,23 @@ def _upsert_kb_asset(store: Any, kb: dict) -> str | None:
 def _upsert_upload_asset(store: Any, sandbox_id: str, filename: str, rows: list[dict], source_path: str) -> str:
     sandbox = store.get_sandbox(sandbox_id) or {}
     content, content_type = _build_upload_asset_content(filename, rows, source_path)
+    suffix = Path(str(source_path or filename or "")).suffix.lower()
+    if suffix in {".pdf", ".docx"}:
+        try:
+            document = next(
+                (
+                    item
+                    for item in store.list_uploaded_documents(sandbox_id=sandbox_id)
+                    if item.get("filename") == filename and item.get("source_path") == source_path
+                ),
+                None,
+            )
+            if document:
+                chunks = store.get_document_chunks(document["document_id"])
+                content = "\n\n".join(str(chunk.get("chunk_text") or "") for chunk in chunks).strip()
+                content_type = document.get("content_type") or content_type
+        except Exception:
+            content = ""
     content_hash = _hash_text(content or json.dumps(rows[:50], ensure_ascii=False))
     asset_id = _upsert_asset_record(
         store,

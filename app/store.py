@@ -60,6 +60,13 @@ from app.db_models import (
     DBKnowledgeAsset,
     DBKnowledgeChunk,
     DBKnowledgeIndexJob,
+    DBUploadedDocument,
+    DBDocumentChunk,
+    DBDocumentParseJob,
+    DBKnowledgeWikiPage,
+    DBKnowledgeWikiRevision,
+    DBKnowledgeReviewItem,
+    DBKnowledgeLintRun,
     DBSandboxVirtualView,
 )
 
@@ -2533,18 +2540,26 @@ class DatabaseStore:
                     if path and Path(path).exists():
 
                         try:
+                            suffix = Path(str(path)).suffix.lower()
+                            if suffix in {".txt", ".md", ".json", ".log", ".sql", ".yaml", ".yml", ".pdf", ".docx"}:
+                                info["document_source"] = True
+                                info["text_preview"] = t(
+                                    "msg_document_source_available",
+                                    default="文档已进入知识来源层，请通过 query_document_sources 检索相关片段。",
+                                )
+                            else:
 
-                            # Try to read as text first
+                                # Try to read as text first
 
-                            with open(path, "r", encoding="utf-8") as f:
+                                with open(path, "r", encoding="utf-8") as f:
 
-                                preview = f.read(1000)
+                                    preview = f.read(1000)
 
-                                info["text_preview"] = preview
+                                    info["text_preview"] = preview
 
-                                if len(preview) >= 1000:
+                                    if len(preview) >= 1000:
 
-                                    info["text_preview"] += "..."
+                                        info["text_preview"] += "..."
 
                         except Exception:
 
@@ -2663,9 +2678,9 @@ class DatabaseStore:
 
     def search_knowledge_index(self, query: str, sandbox_id: str, top_k: int = 5) -> list[dict[str, Any]]:
 
-        from app.knowledge_assets import search_knowledge_index
+        from app.semantic_knowledge import query_unified_knowledge_index
 
-        return search_knowledge_index(self, query=query, sandbox_id=sandbox_id, top_k=top_k)
+        return query_unified_knowledge_index(self, query=query, sandbox_id=sandbox_id, top_k=top_k)
 
 
     def get_runtime_asset_ids(self, sandbox_id: str) -> set[str]:
@@ -2686,7 +2701,131 @@ class DatabaseStore:
 
         from app.knowledge_assets import publish_experience_asset
 
-        return publish_experience_asset(self, skill_id=skill_id, name=name, description=description)
+        asset = publish_experience_asset(self, skill_id=skill_id, name=name, description=description)
+        try:
+            from app.semantic_knowledge import create_experience_review_item
+
+            skill = self.skills.get(skill_id)
+            if skill:
+                create_experience_review_item(self, skill)
+        except Exception:
+            pass
+        return asset
+
+
+    def register_uploaded_document(
+        self,
+        *,
+        sandbox_id: str,
+        owner_id: str | None,
+        filename: str,
+        source_path: str,
+        content_type: str | None = None,
+        parse_immediately: bool = True,
+    ) -> dict[str, Any]:
+
+        from app.semantic_knowledge import register_uploaded_document
+
+        return register_uploaded_document(
+            self,
+            sandbox_id=sandbox_id,
+            owner_id=owner_id,
+            filename=filename,
+            source_path=source_path,
+            content_type=content_type,
+            parse_immediately=parse_immediately,
+        )
+
+
+    def parse_uploaded_document(self, document_id: str, created_by: str | None = None) -> None:
+
+        from app.semantic_knowledge import parse_uploaded_document
+
+        parse_uploaded_document(self, document_id=document_id, created_by=created_by)
+
+
+    def list_uploaded_documents(self, sandbox_id: str | None = None) -> list[dict[str, Any]]:
+
+        from app.semantic_knowledge import list_uploaded_documents
+
+        return list_uploaded_documents(self, sandbox_id=sandbox_id)
+
+
+    def get_uploaded_document(self, document_id: str) -> dict[str, Any] | None:
+
+        from app.semantic_knowledge import get_uploaded_document
+
+        return get_uploaded_document(self, document_id=document_id)
+
+
+    def get_document_chunks(self, document_id: str) -> list[dict[str, Any]]:
+
+        from app.semantic_knowledge import get_document_chunks
+
+        return get_document_chunks(self, document_id=document_id)
+
+
+    def list_wiki_pages(self, sandbox_id: str | None = None, status: str | None = None, page_type: str | None = None) -> list[dict[str, Any]]:
+
+        from app.semantic_knowledge import list_wiki_pages
+
+        return list_wiki_pages(self, sandbox_id=sandbox_id, status=status, page_type=page_type)
+
+
+    def get_wiki_page(self, slug_or_id: str, sandbox_id: str | None = None) -> dict[str, Any] | None:
+
+        from app.semantic_knowledge import get_wiki_page
+
+        return get_wiki_page(self, slug_or_id=slug_or_id, sandbox_id=sandbox_id)
+
+
+    def list_review_items(self, sandbox_id: str | None = None, status: str | None = None) -> list[dict[str, Any]]:
+
+        from app.semantic_knowledge import list_review_items
+
+        return list_review_items(self, sandbox_id=sandbox_id, status=status)
+
+
+    def publish_review_item(self, review_id: str, user_id: str | None = None) -> dict[str, Any]:
+
+        from app.semantic_knowledge import publish_review_item
+
+        return publish_review_item(self, review_id=review_id, user_id=user_id)
+
+
+    def dismiss_review_item(self, review_id: str, user_id: str | None = None) -> dict[str, Any]:
+
+        from app.semantic_knowledge import dismiss_review_item
+
+        return dismiss_review_item(self, review_id=review_id, user_id=user_id)
+
+
+    def query_semantic_layer(self, query: str, sandbox_id: str, top_k: int = 5) -> list[dict[str, Any]]:
+
+        from app.semantic_knowledge import query_semantic_layer
+
+        return query_semantic_layer(self, query=query, sandbox_id=sandbox_id, top_k=top_k)
+
+
+    def query_experience_index(self, query: str, sandbox_id: str, top_k: int = 5) -> list[dict[str, Any]]:
+
+        from app.semantic_knowledge import query_experience_index
+
+        return query_experience_index(self, query=query, sandbox_id=sandbox_id, top_k=top_k)
+
+
+    def query_document_sources(self, query: str, sandbox_id: str, top_k: int = 5) -> list[dict[str, Any]]:
+
+        from app.semantic_knowledge import query_document_sources
+
+        return query_document_sources(self, query=query, sandbox_id=sandbox_id, top_k=top_k)
+
+
+    def lint_semantic_wiki(self, sandbox_id: str | None = None) -> dict[str, Any]:
+
+        from app.semantic_knowledge import lint_semantic_wiki
+
+        return lint_semantic_wiki(self, sandbox_id=sandbox_id)
 
 
     def _sanitize_json(self, o: Any) -> Any:

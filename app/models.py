@@ -138,6 +138,20 @@ class RebuildKnowledgeIndexRequest(BaseModel):
     sandbox_id: str | None = None
 
 
+class KnowledgeReviewResolveRequest(BaseModel):
+    action: str = Field(default="publish", pattern="^(publish|dismiss)$")
+
+
+class SemanticQueryRequest(BaseModel):
+    query: str
+    sandbox_id: str
+    top_k: int = Field(default=5, ge=1, le=20)
+
+
+class SemanticWikiLintRequest(BaseModel):
+    sandbox_id: str | None = None
+
+
 class SQLToolboxExecuteRequest(BaseModel):
     sandbox_id: str
     sql: str

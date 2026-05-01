@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pandas as pd
 from pydantic import BaseModel
-from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Response, UploadFile
+from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, Header, HTTPException, Response, UploadFile
 from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi import Request
@@ -53,6 +53,9 @@ from app.models import (
     PublishExperienceFromProposalRequest,
     SearchKnowledgeIndexRequest,
     RebuildKnowledgeIndexRequest,
+    KnowledgeReviewResolveRequest,
+    SemanticQueryRequest,
+    SemanticWikiLintRequest,
     SQLToolboxExecuteRequest,
     SaveVirtualViewRequest,
 )
@@ -190,10 +193,23 @@ def _collect_business_knowledge(
         title = str(hit.get("title") or hit.get("asset_id") or "").strip()
         snippet = str(hit.get("snippet") or "").strip()
         locator = str(hit.get("full_document_locator") or "").strip()
+        kind = str(hit.get("kind") or hit.get("asset_type") or "asset").strip()
         if title and snippet:
-            knowledge_items.append(f"[Indexed {title}]: {snippet}")
+            if kind == "semantic":
+                frontmatter = hit.get("frontmatter") or {}
+                fm_text = json.dumps(frontmatter, ensure_ascii=False)
+                knowledge_items.append(f"[Semantic Layer {title}]: {snippet}\nFrontmatter: {fm_text}")
+            elif kind == "experience":
+                knowledge_items.append(f"[Experience {title}]: {snippet}")
+            elif kind == "document":
+                knowledge_items.append(f"[Document Source {title}]: {snippet}")
+            else:
+                knowledge_items.append(f"[Indexed {title}]: {snippet}")
         if locator:
-            knowledge_items.append(f"[Knowledge Locator]: use read_knowledge_asset('{hit.get('asset_id')}') or {locator}")
+            if str(locator).startswith("asset://"):
+                knowledge_items.append(f"[Knowledge Locator]: use read_knowledge_asset('{hit.get('asset_id')}') or {locator}")
+            else:
+                knowledge_items.append(f"[Knowledge Locator]: {locator}")
 
     knowledge_items.extend(store.get_business_knowledge(sandbox_id))
 
@@ -2039,6 +2055,7 @@ async def upload_data(
     files: list[UploadFile] = File(...),
     sandbox_id: str = Form(...),
     session_id: str | None = Form(default=None),
+    background_tasks: BackgroundTasks = None,
     user: User = Depends(get_current_user),
 ):
     try:
@@ -2088,12 +2105,37 @@ async def upload_data(
             columns = [str(c) for c in df.columns]
 
         store.add_upload(sandbox_id, filename, rows, file_path=file_path)
+        document_info = None
+        suffix = Path(filename).suffix.lower()
+        if suffix in {".txt", ".md", ".json", ".log", ".sql", ".yaml", ".yml"}:
+            document_info = store.register_uploaded_document(
+                sandbox_id=sandbox_id,
+                owner_id=user.user_id,
+                filename=filename,
+                source_path=file_path,
+                content_type=file.content_type,
+                parse_immediately=True,
+            )
+        elif suffix in {".pdf", ".docx"}:
+            document_info = store.register_uploaded_document(
+                sandbox_id=sandbox_id,
+                owner_id=user.user_id,
+                filename=filename,
+                source_path=file_path,
+                content_type=file.content_type,
+                parse_immediately=False,
+            )
+            if background_tasks is not None:
+                background_tasks.add_task(store.parse_uploaded_document, document_info["document_id"], user.user_id)
+            else:
+                store.parse_uploaded_document(document_info["document_id"], user.user_id)
         
         uploaded_files_info.append({
             "dataset_name": filename,
             "rows": len(rows) if is_tabular else 0,
             "columns": columns,
-            "is_tabular": is_tabular
+            "is_tabular": is_tabular,
+            "document": document_info,
         })
 
     return {"session_id": sid, "uploaded_files": uploaded_files_info}
@@ -3314,6 +3356,131 @@ def search_knowledge_index_debug(req: SearchKnowledgeIndexRequest, user: User = 
                 }
             )
     return {"results": results}
+
+
+@app.get("/api/knowledge/documents")
+def list_uploaded_documents_api(sandbox_id: str | None = None, user: User = Depends(get_current_user)):
+    if sandbox_id:
+        assert_sandbox_access(user, sandbox_id)
+        documents = store.list_uploaded_documents(sandbox_id=sandbox_id)
+    else:
+        accessible = {item["sandbox_id"] for item in get_accessible_sandboxes(user)}
+        documents = [
+            doc
+            for doc in store.list_uploaded_documents()
+            if str(doc.get("sandbox_id") or "") in accessible
+        ]
+    return {"documents": documents}
+
+
+@app.get("/api/knowledge/documents/{document_id}")
+def get_uploaded_document_api(document_id: str, user: User = Depends(get_current_user)):
+    document = store.get_uploaded_document(document_id)
+    if not document:
+        raise HTTPException(status_code=404, detail="Document not found")
+    assert_sandbox_access(user, str(document.get("sandbox_id") or ""))
+    return {**document, "chunks": store.get_document_chunks(document_id)}
+
+
+@app.post("/api/knowledge/documents/{document_id}/parse")
+def parse_uploaded_document_api(document_id: str, user: User = Depends(get_current_user)):
+    document = store.get_uploaded_document(document_id)
+    if not document:
+        raise HTTPException(status_code=404, detail="Document not found")
+    assert_sandbox_access(user, str(document.get("sandbox_id") or ""), action="write")
+    store.parse_uploaded_document(document_id, user.user_id)
+    return store.get_uploaded_document(document_id)
+
+
+@app.get("/api/knowledge/wiki/pages")
+def list_wiki_pages_api(
+    sandbox_id: str | None = None,
+    status: str | None = "published",
+    page_type: str | None = None,
+    user: User = Depends(get_current_user),
+):
+    if sandbox_id:
+        assert_sandbox_access(user, sandbox_id)
+        pages = store.list_wiki_pages(sandbox_id=sandbox_id, status=status, page_type=page_type)
+    else:
+        accessible = {item["sandbox_id"] for item in get_accessible_sandboxes(user)}
+        pages = [
+            page
+            for page in store.list_wiki_pages(status=status, page_type=page_type)
+            if str(page.get("sandbox_id") or "") in accessible
+        ]
+    return {"pages": pages}
+
+
+@app.get("/api/knowledge/wiki/pages/{slug_or_id}")
+def get_wiki_page_api(slug_or_id: str, sandbox_id: str | None = None, user: User = Depends(get_current_user)):
+    page = store.get_wiki_page(slug_or_id, sandbox_id=sandbox_id)
+    if not page:
+        raise HTTPException(status_code=404, detail="Wiki page not found")
+    assert_sandbox_access(user, str(page.get("sandbox_id") or ""))
+    return page
+
+
+@app.get("/api/knowledge/wiki/review-items")
+def list_knowledge_review_items_api(
+    sandbox_id: str | None = None,
+    status: str | None = "pending",
+    user: User = Depends(get_current_user),
+):
+    if sandbox_id:
+        assert_sandbox_access(user, sandbox_id)
+        items = store.list_review_items(sandbox_id=sandbox_id, status=status)
+    else:
+        accessible = {item["sandbox_id"] for item in get_accessible_sandboxes(user)}
+        items = [
+            item
+            for item in store.list_review_items(status=status)
+            if str(item.get("sandbox_id") or "") in accessible
+        ]
+    return {"review_items": items}
+
+
+@app.post("/api/knowledge/wiki/review-items/{review_id}/resolve")
+def resolve_knowledge_review_item_api(
+    review_id: str,
+    req: KnowledgeReviewResolveRequest,
+    user: User = Depends(get_current_user),
+):
+    item = next((entry for entry in store.list_review_items(status=None) if entry["review_id"] == review_id), None)
+    if not item:
+        raise HTTPException(status_code=404, detail="Review item not found")
+    assert_sandbox_access(user, str(item.get("sandbox_id") or ""), action="write")
+    try:
+        if req.action == "dismiss":
+            return {"review_item": store.dismiss_review_item(review_id, user.user_id)}
+        return {"page": store.publish_review_item(review_id, user.user_id)}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/api/knowledge/wiki/lint")
+def lint_semantic_wiki_api(req: SemanticWikiLintRequest, user: User = Depends(get_current_user)):
+    if req.sandbox_id:
+        assert_sandbox_access(user, req.sandbox_id)
+    return store.lint_semantic_wiki(sandbox_id=req.sandbox_id)
+
+
+@app.post("/api/knowledge/semantic/search")
+def search_semantic_layer_api(req: SemanticQueryRequest, user: User = Depends(get_current_user)):
+    assert_sandbox_access(user, req.sandbox_id)
+    return {"results": store.query_semantic_layer(req.query, req.sandbox_id, req.top_k)}
+
+
+@app.post("/api/knowledge/experiences/search")
+def search_experience_index_api(req: SemanticQueryRequest, user: User = Depends(get_current_user)):
+    assert_sandbox_access(user, req.sandbox_id)
+    return {"results": store.query_experience_index(req.query, req.sandbox_id, req.top_k)}
+
+
+@app.post("/api/knowledge/documents/search")
+def search_document_sources_api(req: SemanticQueryRequest, user: User = Depends(get_current_user)):
+    assert_sandbox_access(user, req.sandbox_id)
+    return {"results": store.query_document_sources(req.query, req.sandbox_id, req.top_k)}
 
 @app.post("/api/sandboxes/{sandbox_id}/knowledge_bases")
 def mount_knowledge_bases(sandbox_id: str, req: MountKnowledgeBasesRequest, user: User = Depends(get_current_user)):

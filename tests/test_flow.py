@@ -1534,6 +1534,85 @@ def test_knowledge_index_search_debug_returns_locator_and_readable_asset():
     assert "退款订单不计入活动转化" in content_res.json()["content"]
 
 
+def test_text_document_upload_creates_source_chunks_review_and_semantic_page():
+    headers = _login_admin()
+
+    upload_res = client.post(
+        "/api/data/upload",
+        headers=headers,
+        data={"sandbox_id": "sb_flights_overview"},
+        files={
+            "files": (
+                "semantic_terms.md",
+                "# GMV 指标口径\nGMV 指标 = 支付成功订单金额总和，退款订单需要排除。".encode("utf-8"),
+                "text/markdown",
+            )
+        },
+    )
+    assert upload_res.status_code == 200
+    uploaded = upload_res.json()["uploaded_files"][0]
+    assert uploaded["document"]["parse_status"] == "success"
+    document_id = uploaded["document"]["document_id"]
+
+    doc_res = client.get(f"/api/knowledge/documents/{document_id}", headers=headers)
+    assert doc_res.status_code == 200
+    assert doc_res.json()["chunks"]
+
+    doc_search_res = client.post(
+        "/api/knowledge/documents/search",
+        headers=headers,
+        json={"sandbox_id": "sb_flights_overview", "query": "GMV退款订单", "top_k": 3},
+    )
+    assert doc_search_res.status_code == 200
+    assert doc_search_res.json()["results"]
+
+    review_res = client.get(
+        "/api/knowledge/wiki/review-items?sandbox_id=sb_flights_overview&status=pending",
+        headers=headers,
+    )
+    assert review_res.status_code == 200
+    review_item = next(item for item in review_res.json()["review_items"] if item["source_document_id"] == document_id)
+    assert review_item["proposed_payload"]["page_type"] == "metric"
+
+    publish_res = client.post(
+        f"/api/knowledge/wiki/review-items/{review_item['review_id']}/resolve",
+        headers=headers,
+        json={"action": "publish"},
+    )
+    assert publish_res.status_code == 200
+    page = publish_res.json()["page"]
+    assert page["status"] == "published"
+    assert page["source_document_id"] == document_id
+
+    semantic_res = client.post(
+        "/api/knowledge/semantic/search",
+        headers=headers,
+        json={"sandbox_id": "sb_flights_overview", "query": "GMV 指标口径", "top_k": 3},
+    )
+    assert semantic_res.status_code == 200
+    assert any(item["page_id"] == page["page_id"] for item in semantic_res.json()["results"])
+
+
+def test_pdf_document_parse_failure_is_recorded_without_breaking_upload():
+    headers = _login_admin()
+
+    upload_res = client.post(
+        "/api/data/upload",
+        headers=headers,
+        data={"sandbox_id": "sb_flights_overview"},
+        files={"files": ("broken_policy.pdf", b"%PDF-1.4\nnot a valid pdf body", "application/pdf")},
+    )
+    assert upload_res.status_code == 200
+    document = upload_res.json()["uploaded_files"][0]["document"]
+    document_id = document["document_id"]
+
+    doc_res = client.get(f"/api/knowledge/documents/{document_id}", headers=headers)
+    assert doc_res.status_code == 200
+    assert doc_res.json()["parse_status"] in {"pending", "running", "failed"}
+    if doc_res.json()["parse_status"] == "failed":
+        assert doc_res.json()["parse_error"]
+
+
 def test_pending_experience_can_be_published_from_proposal():
     headers = _login_admin()
     _, _, proposal_id = _run_mock_iteration(headers, message="summarize refund handling")
