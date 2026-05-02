@@ -139,6 +139,20 @@ def generate_data_insight(
 
         return
 
+    parts.append("【AI 问数上下文摘要】" if not is_en else "[AI Data Question Context Summary]")
+    parts.append(
+        json.dumps(
+            {
+                "selected_tables": sandbox.get("tables", [])[:12],
+                "selected_files": selected_files[:12],
+                "business_knowledge_count": len(business_knowledge),
+                "recent_iteration_count": len(iteration_history),
+            },
+            ensure_ascii=False,
+        )
+    )
+    parts.append("")
+
     question_label = t("label_user_question", default="用户问题")
 
     sql_label = t("label_executed_sql", default="执行 SQL")
@@ -479,6 +493,10 @@ def _build_iteration_user_prompt(
             "(conclusions.text, hypotheses.text, action_items, explanation, final_report_outline)."
         )
         parts.append(
+            "- AI data-question protocol: include question_type, needs_clarification, and clarification. "
+            "When the business metric, time range, filter scope, or grain is ambiguous, return steps=[] and ask one concise clarification question."
+        )
+        parts.append(
             "- Narrative fields must contain final concrete values. Never output unresolved placeholders, "
             "Python variable names, or f-string fragments such as {top_dept}, {metric:.2f}, or {'key': value}."
         )
@@ -486,6 +504,10 @@ def _build_iteration_user_prompt(
         parts.append(
             "- 输出语言要求：JSON 字段名保持英文，但所有文本内容必须使用简体中文"
             "（包括 conclusions.text、hypotheses.text、action_items、explanation、final_report_outline）。"
+        )
+        parts.append(
+            "- AI 问数协议：必须包含 question_type、needs_clarification、clarification。"
+            "当指标定义、时间范围、筛选条件或业务粒度不明确且会影响答案时，返回 steps=[] 并提出一个简洁澄清问题。"
         )
         parts.append(
             "- 所有叙述字段都必须写成最终可读的具体值，绝不能输出未解析的占位符、Python 变量名、"
@@ -617,6 +639,9 @@ def _normalize_iteration_payload(parsed: dict, *, include_steps: bool) -> dict:
         "continue_reason": str(parsed.get("continue_reason", "") or "").strip(),
         "stop_if": str(parsed.get("stop_if", "") or "").strip(),
         "finalize": bool(parsed.get("finalize", False)),
+        "question_type": str(parsed.get("question_type", "") or "").strip(),
+        "needs_clarification": bool(parsed.get("needs_clarification", False)),
+        "clarification": str(parsed.get("clarification", "") or "").strip(),
     }
 
 
@@ -801,6 +826,9 @@ def _run_iteration_by_rules(message: str, sandbox: dict) -> Generator[dict, None
             "stop_if": "",
 
             "finalize": False,
+            "question_type": "data_overview",
+            "needs_clarification": False,
+            "clarification": "",
 
         },
 
@@ -845,12 +873,26 @@ def _summarize_execution_for_reflection(execution_result: dict) -> str:
         for index, step_result in enumerate(step_results[:10], start=1):
             if not isinstance(step_result, dict):
                 continue
+            step_rows = step_result.get("rows") or []
+            columns = step_result.get("columns")
+            if not columns:
+                columns = []
+                for row in step_rows[:3]:
+                    if isinstance(row, dict):
+                        for key in row.keys():
+                            if key not in columns:
+                                columns.append(key)
             compact_steps.append(
                 {
                     "step": index,
-                    "rows_count": len(step_result.get("rows") or []),
+                    "status": step_result.get("status") or ("error" if step_result.get("error") else "success"),
+                    "rows_count": step_result.get("rows_count", len(step_rows)),
                     "tables": step_result.get("tables") or [],
-                    "warning": step_result.get("warning") or step_result.get("error") or "",
+                    "columns": columns[:12],
+                    "chart_count": step_result.get("chart_count", len(step_result.get("chart_specs") or [])),
+                    "warning": step_result.get("warning") or "",
+                    "error": step_result.get("error") or "",
+                    "result_digest": str(step_result.get("result_digest") or "")[:800],
                 }
             )
         if compact_steps:
@@ -888,6 +930,9 @@ def synthesize_iteration_result(
             "continue_reason": planned_result.get("continue_reason", ""),
             "stop_if": planned_result.get("stop_if", ""),
             "finalize": planned_result.get("finalize", False),
+            "question_type": planned_result.get("question_type", ""),
+            "needs_clarification": planned_result.get("needs_clarification", False),
+            "clarification": planned_result.get("clarification", ""),
         }
 
     is_en = get_lang() == "en"
@@ -910,11 +955,12 @@ def synthesize_iteration_result(
             if text and text not in known_findings:
                 known_findings.append(text)
     system_prompt = (
-        "You are a senior notebook analysis summarizer. "
-        "You analyze executed SQL/Python evidence after the tool run is complete. "
+        "You are a senior AI data-question answering analyst. "
+        "You analyze executed SQL/Python evidence after the tool run is complete and produce a concise, traceable answer to the user's data question. "
         "Never generate SQL, Python, steps, or tool plans in this stage. "
         "Only produce conclusions that are directly supported by the provided execution evidence. "
-        "Prefer convergence over repetition: once a finding is already known, either explore a genuinely new dimension or finalize."
+        "Prefer convergence over repetition: once a finding is already known, either explore a genuinely new metric/dimension/time grain or finalize. "
+        "If the evidence shows missing fields, empty data, or an ambiguous business definition, say that clearly instead of inventing values."
     )
     user_prompt = (
         f"User request:\n{message}\n\n"
@@ -936,11 +982,16 @@ def synthesize_iteration_result(
         "- explanation: short evidence-based explanation\n"
         "- final_report_outline: array of short strings\n"
         "- goal, observation_focus, continue_reason, stop_if: short strings\n"
+        "- question_type: one of metric_lookup, dimension_compare, trend_analysis, root_cause, anomaly_check, data_overview, clarification, or other\n"
+        "- needs_clarification: boolean\n"
+        "- clarification: one concise clarification question when needed, otherwise empty string\n"
         "- finalize: boolean\n"
         "Rules:\n"
         "- Do not output SQL, Python, or any code.\n"
         "- Do not invent facts not present in the evidence.\n"
         "- Never output placeholders or unresolved variables like {x}.\n"
+        "- The direct_answer must answer the user's question first, then mention the key supporting evidence or limitation.\n"
+        "- If the result is empty or a required column/table is missing, set needs_clarification=true only when a business definition is missing; otherwise explain the data limitation and set finalize=true.\n"
         + (
             "- This is an incremental exploration round. Output only newly discovered findings from this round's execution evidence. Do not restate prior findings unless the new evidence changes, invalidates, or sharpens them.\n"
             "- If this round only confirms old findings and adds nothing new, keep conclusions/hypotheses/action_items minimal.\n"

@@ -326,6 +326,18 @@ def test_auto_analyze_stops_on_repeated_warning_loop(monkeypatch):
     monkeypatch.setattr(main_module, "run_analysis_iteration", fake_run_analysis_iteration)
     monkeypatch.setattr(main_module, "_execute_analysis_steps", fake_execute_analysis_steps)
     monkeypatch.setattr(main_module, "synthesize_iteration_result", fake_synthesize_iteration_result)
+    monkeypatch.setattr(
+        main_module,
+        "generate_auto_analysis_report_bundle",
+        lambda **kwargs: {
+            "title": "Auto Report",
+            "summary": "warning loop",
+            "html_document": "<!doctype html><html><body><h1>warning loop</h1></body></html>",
+            "chart_bindings": [],
+            "legacy_markdown": "## Executive Summary\n- warning loop",
+        },
+    )
+    monkeypatch.setattr(main_module, "generate_auto_analysis_report", lambda **kwargs: "## Executive Summary\n- warning loop")
 
     res = client.post(
         "/api/chat/auto-analyze",
@@ -401,6 +413,18 @@ def test_auto_analyze_converges_on_repeated_topic(monkeypatch):
     monkeypatch.setattr(main_module, "run_analysis_iteration", fake_run_analysis_iteration)
     monkeypatch.setattr(main_module, "_execute_analysis_steps", fake_execute_analysis_steps)
     monkeypatch.setattr(main_module, "synthesize_iteration_result", fake_synthesize_iteration_result)
+    monkeypatch.setattr(
+        main_module,
+        "generate_auto_analysis_report_bundle",
+        lambda **kwargs: {
+            "title": "Auto Report",
+            "summary": "same topic",
+            "html_document": "<!doctype html><html><body><h1>same topic</h1></body></html>",
+            "chart_bindings": [],
+            "legacy_markdown": "## Executive Summary\n- same topic",
+        },
+    )
+    monkeypatch.setattr(main_module, "generate_auto_analysis_report", lambda **kwargs: "## Executive Summary\n- same topic")
 
     res = client.post(
         "/api/chat/auto-analyze",
@@ -416,6 +440,126 @@ def test_auto_analyze_converges_on_repeated_topic(monkeypatch):
     complete_event = next(event for event in events if event["type"] == "analysis_complete")
     assert complete_event["data"]["stop_reason"] == "repeated_topic"
     assert call_state["count"] == 3
+
+
+def test_iterate_stops_on_clarification_needed(monkeypatch):
+    headers = _login_admin()
+
+    def fake_run_analysis_iteration(*, message, sandbox, iteration_history, business_knowledge, provider=None, model=None):
+        yield {
+            "type": "result",
+            "data": {
+                "steps": [],
+                "tools_used": [],
+                "conclusions": [],
+                "hypotheses": [],
+                "action_items": [],
+                "direct_answer": "请明确要统计的成本口径和时间范围。",
+                "explanation": "question needs business grain",
+                "final_report_outline": [],
+                "question_type": "clarification",
+                "needs_clarification": True,
+                "clarification": "请明确要统计的成本口径和时间范围。",
+            },
+        }
+
+    monkeypatch.setattr(main_module, "run_analysis_iteration", fake_run_analysis_iteration)
+
+    res = client.post(
+        "/api/chat/iterate",
+        headers=headers,
+        json={
+            "sandbox_id": "sb_flights_overview",
+            "message": "成本怎么样",
+            "provider": "openai",
+        },
+    )
+
+    assert res.status_code == 200
+    events = _parse_ndjson_events(res.text)
+    complete_event = next(event for event in events if event["type"] == "iteration_complete")
+    assert complete_event["data"]["stop_reason"] == "clarification_needed"
+    assert complete_event["data"]["rounds_completed"] == 1
+
+
+def test_iterate_stops_on_repeated_tool_plan(monkeypatch):
+    headers = _login_admin()
+    call_state = {"count": 0}
+
+    def fake_run_analysis_iteration(*, message, sandbox, iteration_history, business_knowledge, provider=None, model=None):
+        call_state["count"] += 1
+        yield {
+            "type": "result",
+            "data": {
+                "steps": [{"tool": "sql", "code": "SELECT department, SUM(cost) AS total_cost FROM tutorial_flights GROUP BY department LIMIT 5"}],
+                "tools_used": ["execute_select_sql"],
+                "conclusions": [],
+                "hypotheses": [],
+                "action_items": [],
+                "direct_answer": "",
+                "explanation": "same plan",
+                "final_report_outline": [],
+                "finalize": False,
+            },
+        }
+
+    def fake_execute_analysis_steps(*, result_data, sandbox, selected_tables, selected_files, sandbox_id, session_id):
+        return {
+            "rows": [{"department": "Sales", "total_cost": 100 + call_state["count"]}],
+            "tables": ["tutorial_flights"],
+            "chart_specs": [],
+            "step_results": [
+                {
+                    "rows": [{"department": "Sales", "total_cost": 100 + call_state["count"]}],
+                    "tables": ["tutorial_flights"],
+                    "status": "success",
+                    "rows_count": 1,
+                    "columns": ["department", "total_cost"],
+                    "chart_count": 0,
+                    "result_digest": "sales",
+                }
+            ],
+            "warnings": [],
+        }
+
+    def fake_synthesize_iteration_result(*, message, sandbox, iteration_history, business_knowledge, planned_result, execution_result, incremental=True, provider=None, model=None):
+        return {
+            "steps": [],
+            "tools_used": [],
+            "conclusions": [{"text": "Sales 成本最高", "confidence": 0.9}],
+            "hypotheses": [],
+            "action_items": [],
+            "direct_answer": "Sales 成本最高",
+            "explanation": "evidence reflected",
+            "final_report_outline": [],
+            "direct_report": "",
+            "goal": planned_result.get("goal", ""),
+            "observation_focus": "",
+            "continue_reason": "",
+            "stop_if": "",
+            "finalize": False,
+        }
+
+    monkeypatch.setattr(main_module, "run_analysis_iteration", fake_run_analysis_iteration)
+    monkeypatch.setattr(main_module, "_execute_analysis_steps", fake_execute_analysis_steps)
+    monkeypatch.setattr(main_module, "synthesize_iteration_result", fake_synthesize_iteration_result)
+
+    res = client.post(
+        "/api/chat/iterate",
+        headers=headers,
+        json={
+            "sandbox_id": "sb_flights_overview",
+            "message": "哪个部门成本最高",
+            "provider": "openai",
+            "max_rounds": 3,
+        },
+    )
+
+    assert res.status_code == 200
+    events = _parse_ndjson_events(res.text)
+    complete_event = next(event for event in events if event["type"] == "iteration_complete")
+    assert complete_event["data"]["stop_reason"] == "repeated_tool_plan"
+    assert call_state["count"] == 2
 
 
 def test_execute_analysis_steps_rebinds_df_aliases_per_round(monkeypatch):
