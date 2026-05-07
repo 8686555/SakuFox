@@ -92,5 +92,10 @@
   "virtual_views_label": "分析视图",
   "related_files_label": "关联文件",
   "session_patches_label": "会话补丁",
-  "context_sources_label": "上下文来源"
+  "context_sources_label": "上下文来源",
+  "report_format_report": "报告",
+  "report_format_ppt": "PPT",
+  "report_format_custom": "自定义",
+  "report_style_placeholder": "输入展示方式，例如：投研简报 / 管理层汇报页",
+  "report_style_required": "请输入自定义展示方式"
 }

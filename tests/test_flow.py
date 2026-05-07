@@ -822,10 +822,12 @@ def test_auto_analyze_stops_when_model_stops_using_tools_and_persists_report(mon
     assert saved["mode"] == "auto_analysis"
     assert saved["final_report_md"].startswith("## Executive Summary")
     assert saved["report_title"] == "Auto Report"
-    assert "data-chart-id" in saved["final_report_html"]
+    assert "<h1>done</h1>" in saved["final_report_html"]
     assert saved["final_report_summary"] == "done"
-    assert len(saved["final_report_chart_bindings"]) == 1
+    assert saved["final_report_chart_bindings"] == []
     assert len(saved["loop_rounds"]) == 2
+    assert saved["report_meta"]["report_format"] == "report"
+    assert saved["report_meta"]["report_style_instruction"] == ""
 
     report_res = client.get(
         f"/api/reports/iterations/{complete_event['data']['iteration_id']}",
@@ -835,7 +837,7 @@ def test_auto_analyze_stops_when_model_stops_using_tools_and_persists_report(mon
     payload = report_res.json()
     assert payload["report_title"] == "Auto Report"
     assert payload["final_report_summary"] == "done"
-    assert len(payload["final_report_chart_bindings"]) == 1
+    assert payload["final_report_chart_bindings"] == []
 
 
 def test_auto_analyze_normalizes_wrapped_html_before_persist(monkeypatch):
@@ -953,7 +955,6 @@ def test_auto_analyze_converts_markdown_html_field_to_real_html(monkeypatch):
     assert "<html" in final_html.lower()
     assert "<h1>" in final_html.lower()
     assert "<ul>" in final_html.lower()
-    assert "data-chart-id=\"chart_1\"" in final_html
 
     report_res = client.get(
         f"/api/reports/iterations/{complete_event['data']['iteration_id']}",
@@ -962,7 +963,84 @@ def test_auto_analyze_converts_markdown_html_field_to_real_html(monkeypatch):
     assert report_res.status_code == 200
     payload = report_res.json()
     assert "<h1>" in str(payload["final_report_html"]).lower()
-    assert "data-chart-id=\"chart_1\"" in str(payload["final_report_html"])
+    assert "data-chart-id=\"chart_1\"" not in str(payload["final_report_html"])
+
+
+def test_auto_analyze_rejects_legacy_html_report_format():
+    headers = _login_admin()
+
+    res = client.post(
+        "/api/chat/auto-analyze",
+        headers=headers,
+        json={
+            "sandbox_id": "sb_flights_overview",
+            "message": "auto analyze legacy html",
+            "provider": "mock",
+            "report_format": "html",
+        },
+    )
+
+    assert res.status_code == 422
+
+
+def test_auto_analyze_persists_custom_report_style_instruction(monkeypatch):
+    headers = _login_admin()
+    captured = {}
+
+    def fake_run_analysis_iteration(*, message, sandbox, iteration_history, business_knowledge, provider=None, model=None):
+        yield {
+            "type": "result",
+            "data": {
+                "steps": [],
+                "conclusions": [{"text": "done", "confidence": 0.8}],
+                "hypotheses": [],
+                "action_items": [],
+                "tools_used": [],
+                "explanation": "done",
+                "final_report_outline": [],
+            },
+        }
+
+    def fake_generate_bundle(**kwargs):
+        captured["kwargs"] = kwargs
+        return {
+            "title": "Custom Report",
+            "summary": "custom summary",
+            "html_document": "<!doctype html><html><body><h1>custom</h1></body></html>",
+            "chart_bindings": [],
+            "legacy_markdown": "## 执行摘要\n- custom",
+        }
+
+    monkeypatch.setattr(main_module, "run_analysis_iteration", fake_run_analysis_iteration)
+    monkeypatch.setattr(main_module, "generate_auto_analysis_report_bundle", fake_generate_bundle)
+    monkeypatch.setattr(main_module, "generate_auto_analysis_report", lambda **kwargs: "## 执行摘要\n- custom")
+
+    res = client.post(
+        "/api/chat/auto-analyze",
+        headers=headers,
+        json={
+            "sandbox_id": "sb_flights_overview",
+            "message": "auto analyze custom format",
+            "provider": "mock",
+            "report_format": "custom",
+            "report_style_instruction": "投研简报",
+        },
+    )
+
+    assert res.status_code == 200
+    events = _parse_ndjson_events(res.text)
+    complete_event = next(event for event in events if event["type"] == "analysis_complete")
+    assert captured["kwargs"]["report_format"] == "custom"
+    assert captured["kwargs"]["report_style_instruction"] == "投研简报"
+
+    history = client.get(
+        f"/api/chat/history?session_id={complete_event['data']['session_id']}",
+        headers=headers,
+    )
+    assert history.status_code == 200
+    saved = history.json()["iterations"][0]
+    assert saved["report_meta"]["report_format"] == "custom"
+    assert saved["report_meta"]["report_style_instruction"] == "投研简报"
 
 
 def test_auto_analyze_round_message_respects_zh_language_header(monkeypatch):

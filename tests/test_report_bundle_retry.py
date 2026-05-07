@@ -51,7 +51,7 @@ def _run_bundle_generation():
     )
 
 
-def test_report_bundle_accepts_standalone_ai_html_and_injects_missing_chart_placeholders(monkeypatch):
+def test_report_bundle_accepts_standalone_ai_html_without_chart_placeholders(monkeypatch):
     monkeypatch.setattr(
         agent_module,
         "generate_auto_analysis_report",
@@ -69,7 +69,7 @@ def test_report_bundle_accepts_standalone_ai_html_and_injects_missing_chart_plac
     bundle = _run_bundle_generation()
     assert call_state["count"] == 1
     assert "<html" in str(bundle["html_document"]).lower()
-    assert "data-chart-id=\"chart_1\"" in str(bundle["html_document"])
+    assert "data-chart-id=\"chart_1\"" not in str(bundle["html_document"])
     assert "class=\"hero\"" in str(bundle["html_document"])
 
 
@@ -93,11 +93,11 @@ def test_report_bundle_repairs_html_fragment_before_minimal_fallback(monkeypatch
     monkeypatch.setattr(agent_module, "_call_openai_protocol", fake_openai)
 
     bundle = _run_bundle_generation()
-    assert call_state["count"] == 2
+    assert call_state["count"] == 1
     html_text = str(bundle["html_document"]).lower()
     assert "<html" in html_text
-    assert "修复后报告" in bundle["html_document"]
-    assert "data-chart-id=\"chart_1\"" in html_text
+    assert "报告片段" in bundle["html_document"]
+    assert bundle["chart_bindings"] == []
 
 
 def test_auto_report_prompt_does_not_force_fixed_sections(monkeypatch):
@@ -145,7 +145,7 @@ def test_report_bundle_prompt_lets_html_follow_iteration_results(monkeypatch):
     assert "自选报告" in bundle["html_document"]
     assert "fixed report template" in captured["system_prompt"]
     assert "Structured iteration results" in captured["user_prompt"]
-    assert "Available chart specs JSON" in captured["user_prompt"]
+    assert ("首选展示方式" in captured["user_prompt"]) or ("Preferred display style" in captured["user_prompt"])
     assert "REQUIRED:" not in captured["user_prompt"]
     assert "cards, metric callouts" not in captured["user_prompt"]
 
@@ -193,7 +193,7 @@ def test_report_bundle_uses_polished_fallback_after_empty_html_repairs_fail(monk
     bundle = _run_bundle_generation()
     html_text = str(bundle["html_document"])
 
-    assert call_state["count"] == 3
+    assert call_state["count"] == 1
     assert "<!doctype html>" in html_text.lower()
     assert "report-shell" in html_text
     assert "report-hero" in html_text
@@ -201,7 +201,7 @@ def test_report_bundle_uses_polished_fallback_after_empty_html_repairs_fail(monk
     assert "box-shadow" in html_text
 
 
-def test_report_bundle_redesigns_plain_standalone_html(monkeypatch):
+def test_report_bundle_accepts_plain_standalone_html_without_redesign(monkeypatch):
     monkeypatch.setattr(
         agent_module,
         "generate_auto_analysis_report",
@@ -212,19 +212,51 @@ def test_report_bundle_redesigns_plain_standalone_html(monkeypatch):
 
     def fake_openai(system_prompt, user_prompt, model, config):
         call_state["count"] += 1
-        if "Return valid JSON only" in user_prompt:
-            yield _bundle_response("<!doctype html><html><head><style>body{font-family:Arial}</style></head><body><h1>分析报告</h1><hr><p>plain</p></body></html>")
-        else:
-            assert "plain white document" in user_prompt
-            yield _polished_html("重新设计报告")
+        yield _bundle_response("<!doctype html><html><head><style>body{font-family:Arial}</style></head><body><h1>分析报告</h1><hr><p>plain</p></body></html>")
 
     monkeypatch.setattr(agent_module, "_call_openai_protocol", fake_openai)
 
     bundle = _run_bundle_generation()
 
-    assert call_state["count"] == 2
-    assert "重新设计报告" in bundle["html_document"]
-    assert "class=\"hero\"" in bundle["html_document"]
+    assert call_state["count"] == 1
+    assert "分析报告" in bundle["html_document"]
+    assert "plain" in bundle["html_document"]
+
+
+def test_report_bundle_custom_prompt_includes_display_style_instruction(monkeypatch):
+    monkeypatch.setattr(
+        agent_module,
+        "generate_auto_analysis_report",
+        lambda **kwargs: "## 执行摘要\n- done",
+    )
+
+    captured = {}
+
+    def fake_openai(system_prompt, user_prompt, model, config):
+        captured["system_prompt"] = system_prompt
+        captured["user_prompt"] = user_prompt
+        yield _bundle_response(_polished_html("自定义页面", "投研简报"))
+
+    monkeypatch.setattr(agent_module, "_call_openai_protocol", fake_openai)
+
+    bundle = agent_module.generate_auto_analysis_report_bundle(
+        message="测试自动分析",
+        session_history=[],
+        business_knowledge=[],
+        session_patches=[],
+        loop_rounds=[],
+        chart_specs=[],
+        final_result_rows=[],
+        stop_reason="model_stopped_using_tools",
+        rounds_completed=1,
+        provider="openai",
+        report_format="custom",
+        report_style_instruction="投研简报",
+    )
+
+    assert "自定义页面" in bundle["html_document"]
+    assert "用户指定的展示方式" in captured["system_prompt"]
+    assert "投研简报" in captured["user_prompt"]
 
 
 def test_report_bundle_prompt_includes_iteration_warnings(monkeypatch):

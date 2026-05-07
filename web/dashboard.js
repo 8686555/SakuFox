@@ -30,6 +30,9 @@ const skillList = document.getElementById("skillList");
 
 const sessionList = document.getElementById("sessionList");
 
+const autoReportFormatSelect = document.getElementById("autoReportFormatSelect");
+const autoReportStyleInput = document.getElementById("autoReportStyleInput");
+
 
 
 function scrollToBottom() {
@@ -255,6 +258,22 @@ function tr(key, fallback, params = {}) {
   const text = i18n.t(key, params);
   if (!text || text === key) return fallback;
   return text;
+}
+
+function syncAutoReportStyleControls() {
+  if (!autoReportFormatSelect || !autoReportStyleInput) return;
+  const isCustom = autoReportFormatSelect.value === "custom";
+  autoReportStyleInput.style.display = isCustom ? "block" : "none";
+  autoReportStyleInput.disabled = !isCustom;
+}
+
+function getAutoReportPreferences() {
+  const format = autoReportFormatSelect ? autoReportFormatSelect.value || "report" : "report";
+  const styleInstruction = autoReportStyleInput ? autoReportStyleInput.value.trim() : "";
+  return {
+    format,
+    styleInstruction,
+  };
 }
 
 function renderSkillContextSnapshot(snapshot) {
@@ -2465,6 +2484,12 @@ async function handleAutoAnalyze() {
 
     .map(cb => cb.value);
 
+  const reportPrefs = getAutoReportPreferences();
+  if (reportPrefs.format === "custom" && !reportPrefs.styleInstruction) {
+    alert(i18n.t("report_style_required") || "请输入自定义展示方式");
+    return;
+  }
+
   const reqBody = {
 
     sandbox_id: sandboxId,
@@ -2477,9 +2502,15 @@ async function handleAutoAnalyze() {
 
     selected_tables: checkedTables.length > 0 ? checkedTables : null,
 
-    trace_mode: "full"
+    trace_mode: "full",
+
+    report_format: reportPrefs.format
 
   };
+
+  if (reportPrefs.format === "custom" && reportPrefs.styleInstruction) {
+    reqBody.report_style_instruction = reportPrefs.styleInstruction;
+  }
 
   if (directive.provider) reqBody.provider = directive.provider;
 
@@ -2713,6 +2744,11 @@ document.getElementById("autoAnalyzeBtn").onclick = () => {
   }
   handleAutoAnalyze();
 };
+
+if (autoReportFormatSelect) {
+  autoReportFormatSelect.addEventListener("change", syncAutoReportStyleControls);
+  syncAutoReportStyleControls();
+}
 
 
 

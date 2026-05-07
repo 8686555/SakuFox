@@ -8,7 +8,7 @@
       missingIteration: "\u7f3a\u5c11 iteration_id",
       loadFailed: "\u52a0\u8f7d\u62a5\u544a\u5931\u8d25",
       emptyReport: "\u62a5\u544a\u5185\u5bb9\u4e3a\u7a7a",
-      renderFailed: "\u56fe\u8868\u6e32\u67d3\u5931\u8d25",
+      renderFailed: "\u62a5\u544a\u6e32\u67d3\u5931\u8d25",
       iteration: "\u8fed\u4ee3",
     },
     en: {
@@ -19,7 +19,7 @@
       missingIteration: "Missing iteration_id",
       loadFailed: "Failed to load report",
       emptyReport: "Report content is empty",
-      renderFailed: "Failed to render charts",
+      renderFailed: "Failed to render report",
       iteration: "Iteration",
     },
   };
@@ -158,166 +158,6 @@
     return response.json();
   }
 
-  function cloneChartOption(option) {
-    if (!option || typeof option !== "object") return {};
-    try {
-      return structuredClone(option);
-    } catch (_) {
-      try {
-        return JSON.parse(JSON.stringify(option));
-      } catch (_) {
-        return { ...option };
-      }
-    }
-  }
-
-  function parseCssColor(value) {
-    const text = String(value || "").trim();
-    const match = text.match(/^rgba?\(([^)]+)\)$/i);
-    if (!match) return null;
-    const parts = match[1].split(",").map((item) => parseFloat(item.trim()));
-    if (parts.length < 3 || parts.some((item, index) => index < 3 && Number.isNaN(item))) return null;
-    const alpha = parts.length >= 4 && !Number.isNaN(parts[3]) ? parts[3] : 1;
-    if (alpha <= 0.05) return null;
-    return { r: parts[0], g: parts[1], b: parts[2] };
-  }
-
-  function isDarkChartHost(host) {
-    let node = host;
-    const view = host?.ownerDocument?.defaultView || window;
-    while (node && node.nodeType === 1) {
-      const color = parseCssColor(view.getComputedStyle(node).backgroundColor);
-      if (color) {
-        const luminance = (0.2126 * color.r + 0.7152 * color.g + 0.0722 * color.b) / 255;
-        return luminance < 0.45;
-      }
-      node = node.parentElement;
-    }
-    return false;
-  }
-
-  function asArray(value) {
-    if (!value) return [];
-    return Array.isArray(value) ? value : [value];
-  }
-
-  function prepareChartOption(option, darkHost) {
-    const patched = cloneChartOption(option);
-    const textColor = darkHost ? "#e5eefb" : "#243042";
-    const mutedColor = darkHost ? "#9fb0c8" : "#64748b";
-    const gridColor = darkHost ? "rgba(229,238,251,.18)" : "rgba(100,116,139,.18)";
-    patched.backgroundColor = patched.backgroundColor || "transparent";
-    patched.textStyle = { ...(patched.textStyle || {}), color: patched.textStyle?.color || textColor };
-    patched.color = patched.color || ["#60a5fa", "#34d399", "#fbbf24", "#f472b6", "#a78bfa", "#22d3ee", "#fb7185"];
-    asArray(patched.title).forEach((item) => {
-      if (!item || typeof item !== "object") return;
-      item.textStyle = { ...(item.textStyle || {}), color: item.textStyle?.color || textColor };
-      item.subtextStyle = { ...(item.subtextStyle || {}), color: item.subtextStyle?.color || mutedColor };
-    });
-    asArray(patched.legend).forEach((item) => {
-      if (!item || typeof item !== "object") return;
-      item.textStyle = { ...(item.textStyle || {}), color: item.textStyle?.color || textColor };
-    });
-    ["xAxis", "yAxis", "radiusAxis", "angleAxis"].forEach((key) => {
-      asArray(patched[key]).forEach((axis) => {
-        if (!axis || typeof axis !== "object") return;
-        axis.axisLabel = { ...(axis.axisLabel || {}), color: axis.axisLabel?.color || mutedColor };
-        axis.nameTextStyle = { ...(axis.nameTextStyle || {}), color: axis.nameTextStyle?.color || mutedColor };
-        axis.axisLine = {
-          ...(axis.axisLine || {}),
-          lineStyle: { ...(axis.axisLine?.lineStyle || {}), color: axis.axisLine?.lineStyle?.color || gridColor },
-        };
-        axis.splitLine = {
-          ...(axis.splitLine || {}),
-          lineStyle: { ...(axis.splitLine?.lineStyle || {}), color: axis.splitLine?.lineStyle?.color || gridColor },
-        };
-      });
-    });
-    asArray(patched.series).forEach((series) => {
-      if (!series || typeof series !== "object") return;
-      series.label = { ...(series.label || {}), color: series.label?.color || textColor };
-    });
-    return patched;
-  }
-
-  function makeChartMountVisible(host, mount, height) {
-    host.style.setProperty("display", "block", "important");
-    host.style.setProperty("position", "relative", "important");
-    host.style.setProperty("width", "100%", "important");
-    host.style.setProperty("min-height", `${height}px`, "important");
-    host.style.setProperty("overflow", "visible", "important");
-    mount.style.setProperty("display", "block", "important");
-    mount.style.setProperty("position", "relative", "important");
-    mount.style.setProperty("width", "100%", "important");
-    mount.style.setProperty("height", `${height}px`, "important");
-    mount.style.setProperty("min-height", `${height}px`, "important");
-    mount.style.setProperty("opacity", "1", "important");
-    mount.style.setProperty("visibility", "visible", "important");
-  }
-
-  function revealRenderedChart(mount, chart) {
-    const reveal = () => {
-      mount.querySelectorAll("canvas,svg").forEach((node) => {
-        node.style.setProperty("display", "block", "important");
-        node.style.setProperty("opacity", "1", "important");
-        node.style.setProperty("visibility", "visible", "important");
-      });
-      try {
-        chart.resize();
-      } catch (_) {
-        // no-op
-      }
-    };
-    reveal();
-    setTimeout(reveal, 80);
-    setTimeout(reveal, 300);
-  }
-
-  function mountCharts(iframeDoc, bindings, lang) {
-    if (!window.echarts || !Array.isArray(bindings)) return;
-    let chartSection = null;
-    const ensureSection = () => {
-      if (chartSection) return chartSection;
-      chartSection = iframeDoc.createElement("section");
-      chartSection.style.marginTop = "22px";
-      const heading = iframeDoc.createElement("h2");
-      heading.textContent = lang === "en" ? "Charts" : "\u56fe\u8868";
-      heading.style.margin = "0 0 10px";
-      chartSection.appendChild(heading);
-      const root = iframeDoc.body || iframeDoc.documentElement;
-      if (root) root.appendChild(chartSection);
-      return chartSection;
-    };
-    bindings.forEach((binding) => {
-      if (!binding || typeof binding !== "object") return;
-      const chartId = String(binding.chart_id || "").trim();
-      const option = binding.option;
-      if (!chartId || !option || typeof option !== "object") return;
-      let host = iframeDoc.querySelector(`[data-chart-id="${chartId}"]`);
-      if (!host) {
-        const section = ensureSection();
-        const block = iframeDoc.createElement("section");
-        block.style.marginTop = "14px";
-        const title = iframeDoc.createElement("h3");
-        title.textContent = `${lang === "en" ? "Chart" : "\u56fe\u8868"}: ${chartId}`;
-        title.style.margin = "0 0 8px";
-        host = iframeDoc.createElement("div");
-        host.setAttribute("data-chart-id", chartId);
-        block.appendChild(title);
-        block.appendChild(host);
-        section.appendChild(block);
-      }
-      const height = Math.max(200, Math.min(1200, parseInt(binding.height || 360, 10) || 360));
-      host.innerHTML = "";
-      const mount = iframeDoc.createElement("div");
-      makeChartMountVisible(host, mount, height);
-      host.appendChild(mount);
-      const chart = echarts.init(mount);
-      chart.setOption(prepareChartOption(option, isDarkChartHost(host)), true);
-      revealRenderedChart(mount, chart);
-    });
-  }
-
   function syncFrameHeight(frame) {
     try {
       const doc = frame.contentDocument;
@@ -325,8 +165,8 @@
       if (doc.documentElement) doc.documentElement.style.overflow = "auto";
       if (doc.body) doc.body.style.overflow = "auto";
       if (doc.body) doc.body.style.margin = doc.body.style.margin || "0";
-      const bodyHeight = doc.body ? doc.body.scrollHeight : 0;
-      const htmlHeight = doc.documentElement ? doc.documentElement.scrollHeight : 0;
+      const bodyHeight = doc.body ? Math.max(doc.body.scrollHeight, Math.ceil(doc.body.getBoundingClientRect().height || 0)) : 0;
+      const htmlHeight = doc.documentElement ? Math.max(doc.documentElement.scrollHeight, Math.ceil(doc.documentElement.getBoundingClientRect().height || 0)) : 0;
       const viewportFloor = Math.max(800, window.innerHeight - 140);
       const target = Math.max(bodyHeight, htmlHeight, viewportFloor);
       frame.style.height = `${target}px`;
@@ -345,15 +185,58 @@
     }
   }
 
+  function normalizeReportFormat(value) {
+    const text = String(value || "").trim().toLowerCase();
+    return ["report", "ppt", "custom"].includes(text) ? text : "report";
+  }
+
+  function applyPptViewportFit(frame, reportFormat) {
+    if (!frame || normalizeReportFormat(reportFormat) !== "ppt") return;
+    const doc = frame.contentDocument;
+    if (!doc || !doc.documentElement || !doc.body) return;
+
+    const html = doc.documentElement;
+    const body = doc.body;
+    const viewportWidth = Math.max(320, frame.clientWidth || frame.parentElement?.clientWidth || 0);
+    if (!viewportWidth) return;
+
+    body.style.zoom = "";
+    body.style.transform = "";
+    body.style.transformOrigin = "";
+    body.style.width = "";
+    body.style.maxWidth = "";
+    body.style.marginLeft = "";
+    body.style.marginRight = "";
+    body.style.overflowX = "hidden";
+    html.style.overflowX = "hidden";
+
+    const naturalWidth = Math.max(
+      body.scrollWidth || 0,
+      html.scrollWidth || 0,
+      body.offsetWidth || 0,
+      html.clientWidth || 0
+    );
+    if (!naturalWidth) return;
+
+    const scale = Math.min(1, (viewportWidth - 8) / naturalWidth);
+    if (scale >= 0.995) return;
+
+    body.style.zoom = String(scale);
+    body.style.width = `${naturalWidth}px`;
+    body.style.maxWidth = `${naturalWidth}px`;
+    body.style.marginLeft = "auto";
+    body.style.marginRight = "auto";
+  }
+
   async function init() {
     const frame = qs("reportFrame");
     const loading = qs("loading");
     const btnBack = qs("btnBack");
     const btnPrint = qs("btnPrint");
-    const formatSelect = qs("reportFormatSelect");
     const iterationId = getQueryParam("iteration_id");
     const printMode = getQueryParam("print") === "1";
     const lang = getLang();
+    let currentReportFormat = "report";
 
     document.documentElement.lang = lang === "en" ? "en" : "zh-CN";
     document.title = t(lang, "pageTitle");
@@ -372,99 +255,49 @@
       return;
     }
 
+    const renderHtmlDocument = (htmlDocument, reportFormat) => {
+      frame.onload = () => {
+        try {
+          const doc = frame.contentDocument;
+          if (!doc) return;
+          if (doc.documentElement) doc.documentElement.style.minHeight = "100%";
+          if (doc.body) doc.body.style.minHeight = "100%";
+          currentReportFormat = normalizeReportFormat(reportFormat);
+          applyPptViewportFit(frame, currentReportFormat);
+          syncFrameHeight(frame);
+          setTimeout(() => applyPptViewportFit(frame, currentReportFormat), 80);
+          setTimeout(() => syncFrameHeight(frame), 250);
+          setTimeout(() => applyPptViewportFit(frame, currentReportFormat), 300);
+          setTimeout(() => syncFrameHeight(frame), 900);
+          setTimeout(() => applyPptViewportFit(frame, currentReportFormat), 900);
+          if (printMode) {
+            setTimeout(() => printFrame(frame), 300);
+          }
+        } catch (err) {
+          showError(`${t(lang, "renderFailed")}: ${err.message || err}`);
+        }
+      };
+      frame.srcdoc = htmlDocument;
+      frame.style.display = "block";
+      window.onresize = () => {
+        applyPptViewportFit(frame, currentReportFormat);
+        syncFrameHeight(frame);
+      };
+      if (loading) loading.style.display = "none";
+    };
+
     async function loadReport() {
       try {
         const data = await fetchReport(iterationId, lang);
         const htmlDocument = normalizeHtmlDocument(data.final_report_html || "");
-        const chartBindings = data.final_report_chart_bindings || [];
         if (!htmlDocument) {
           showError(t(lang, "emptyReport"));
           return;
         }
-
-        frame.onload = () => {
-          try {
-            const doc = frame.contentDocument;
-            if (!doc) return;
-            if (doc.documentElement) doc.documentElement.style.minHeight = "100%";
-            if (doc.body) doc.body.style.minHeight = "100%";
-            mountCharts(doc, chartBindings, lang);
-            syncFrameHeight(frame);
-            setTimeout(() => syncFrameHeight(frame), 250);
-            setTimeout(() => syncFrameHeight(frame), 900);
-            if (printMode) {
-              setTimeout(() => printFrame(frame), 300);
-            }
-          } catch (err) {
-            showError(`${t(lang, "renderFailed")}: ${err.message || err}`);
-          }
-        };
-        frame.srcdoc = htmlDocument;
-        frame.style.display = "block";
-        window.addEventListener("resize", () => syncFrameHeight(frame));
-        if (loading) loading.style.display = "none";
+        renderHtmlDocument(htmlDocument, data.report_meta?.report_format || "report");
       } catch (err) {
         showError(err.message || String(err));
       }
-    }
-
-    async function regenerateReport(format) {
-      if (loading) {
-        loading.style.display = "block";
-        loading.textContent = lang === "en" ? "Regenerating report..." : "正在重新生成报告...";
-      }
-      frame.style.display = "none";
-
-      try {
-        const headers = { "Content-Type": "application/json", "X-Language": lang };
-        const token = getToken();
-        if (token) headers.Authorization = `Bearer ${token}`;
-        const response = await fetch("/api/regenerate-report", {
-          method: "POST",
-          headers,
-          credentials: "include",
-          body: JSON.stringify({ iteration_id: iterationId, report_format: format }),
-        });
-        if (!response.ok) {
-          throw new Error(`${t(lang, "loadFailed")}: ${response.status}`);
-        }
-        const data = await response.json();
-        const htmlDocument = normalizeHtmlDocument(data.html_document || "");
-        const chartBindings = data.chart_bindings || [];
-        if (!htmlDocument) {
-          showError(t(lang, "emptyReport"));
-          return;
-        }
-
-        frame.onload = () => {
-          try {
-            const doc = frame.contentDocument;
-            if (!doc) return;
-            if (doc.documentElement) doc.documentElement.style.minHeight = "100%";
-            if (doc.body) doc.body.style.minHeight = "100%";
-            mountCharts(doc, chartBindings, lang);
-            syncFrameHeight(frame);
-            setTimeout(() => syncFrameHeight(frame), 250);
-            setTimeout(() => syncFrameHeight(frame), 900);
-          } catch (err) {
-            showError(`${t(lang, "renderFailed")}: ${err.message || err}`);
-          }
-        };
-        frame.srcdoc = htmlDocument;
-        frame.style.display = "block";
-        if (loading) loading.style.display = "none";
-      } catch (err) {
-        showError(err.message || String(err));
-      }
-    }
-
-    if (formatSelect) {
-      formatSelect.addEventListener("change", (e) => {
-        const format = e.target.value;
-        if (format) {
-          regenerateReport(format);
-        }
-      });
     }
 
     await loadReport();

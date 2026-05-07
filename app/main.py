@@ -998,18 +998,12 @@ def _build_report_bundle_from_markdown(markdown_text: str, chart_specs: list[dic
     default_title = "Analysis Report" if is_en else "分析报告"
     safe_md = str(markdown_text or "").strip()
     report_title, summary, _ = _build_polished_report_sections(safe_md, default_title)
-    chart_bindings = [
-        {"chart_id": f"chart_{idx}", "option": spec, "height": 360}
-        for idx, spec in enumerate(chart_specs[:20], start=1)
-        if isinstance(spec, dict)
-    ]
-    chart_slots = "".join(f'<div data-chart-id="chart_{idx}" style="min-height:260px"></div>' for idx, _ in enumerate(chart_bindings, start=1))
-    html_doc = _build_polished_fallback_report_html(safe_md, report_title, chart_slots)
+    html_doc = _build_polished_fallback_report_html(safe_md, report_title)
     return {
         "title": report_title,
         "summary": (summary or safe_md[:500]),
         "html_document": html_doc,
-        "chart_bindings": chart_bindings,
+        "chart_bindings": [],
         "legacy_markdown": safe_md,
     }
 
@@ -1036,14 +1030,13 @@ def _build_polished_fallback_report_html(markdown_text: str, title: str, extra_b
         ".report-section{background:rgba(255,255,255,.92);border:1px solid rgba(148,163,184,.28);border-radius:18px;padding:24px 26px;box-shadow:0 18px 48px rgba(15,23,42,.08);min-width:0}.report-section:first-child{grid-column:1/-1}"
         ".section-index{display:inline-flex;align-items:center;justify-content:center;height:26px;min-width:34px;padding:0 10px;border-radius:999px;background:#dbeafe;color:#1d4ed8;font-size:12px;font-weight:900;margin-bottom:12px}.report-section h2{font-size:24px;line-height:1.25;margin:0 0 14px}.section-body{font-size:15px;color:#243042;overflow-wrap:anywhere}.section-body p{margin:10px 0}.section-body ul,.section-body ol{padding-left:22px;margin:10px 0}.section-body li{margin:7px 0}"
         ".section-body table{width:100%;table-layout:fixed;border-collapse:separate;border-spacing:0;margin:16px 0;border:1px solid var(--line);border-radius:14px;overflow:hidden;background:#fff}.section-body th,.section-body td{padding:12px 14px;border-bottom:1px solid #e7edf5;text-align:left;vertical-align:top;word-break:break-word}.section-body th{background:#f1f6fd;color:#0f172a;font-weight:850}.section-body tr:last-child td{border-bottom:0}"
-        ".chart-zone{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px;margin-top:18px}.chart-zone>[data-chart-id],.chart-zone>div{background:#fff;border:1px solid rgba(148,163,184,.28);border-radius:18px;box-shadow:0 18px 48px rgba(15,23,42,.08);padding:12px;min-height:320px}[data-chart-id]{width:100%;min-height:320px}"
-        "@media(max-width:860px){.report-shell{padding:18px 12px 36px}.report-hero,.content-grid,.chart-zone{grid-template-columns:1fr}.hero-main{padding:28px 24px;border-radius:20px}h1{font-size:30px}.report-section{padding:20px}}@media print{body{background:#fff}.report-shell{max-width:none;padding:0}.hero-main,.hero-note,.report-section,.chart-zone>[data-chart-id],.chart-zone>div{box-shadow:none;break-inside:avoid-page}}</style>"
+        "@media(max-width:860px){.report-shell{padding:18px 12px 36px}.report-hero,.content-grid{grid-template-columns:1fr}.hero-main{padding:28px 24px;border-radius:20px}h1{font-size:30px}.report-section{padding:20px}}@media print{body{background:#fff}.report-shell{max-width:none;padding:0}.hero-main,.hero-note,.report-section{box-shadow:none;break-inside:avoid-page}}</style>"
         "</head><body><main class=\"report-shell\">"
         f"<section class=\"report-hero\"><div class=\"hero-main\"><div class=\"eyebrow\">{eyebrow}</div><h1>{html.escape(report_title)}</h1>{summary_html}</div>"
-        f"<aside class=\"hero-side\"><div class=\"hero-note\"><strong>{'Evidence-based' if is_en else '基于迭代证据'}</strong><span>{'Generated from completed analysis rounds and verified execution output.' if is_en else '根据已完成的分析轮次、执行结果和可用图表整理。'}</span></div>"
-        f"<div class=\"hero-note\"><strong>{'Chart-ready' if is_en else '图表可挂载'}</strong><span>{'Visual placeholders remain available for host-rendered ECharts.' if is_en else '保留图表挂载点，由页面宿主渲染 ECharts。'}</span></div></aside></section>"
+        f"<aside class=\"hero-side\"><div class=\"hero-note\"><strong>{'Evidence-based' if is_en else '基于迭代证据'}</strong><span>{'Generated from completed analysis rounds and verified execution output.' if is_en else '根据已完成的分析轮次和执行结果整理。'}</span></div>"
+        f"<div class=\"hero-note\"><strong>{'HTML output' if is_en else 'HTML 输出'}</strong><span>{'The page is delivered as a standalone browser-renderable HTML document.' if is_en else '页面将以可直接打开的独立 HTML 文档形式输出。'}</span></div></aside></section>"
         f"<section class=\"content-grid\">{body_content}</section>"
-        f"{f'<section class=\"chart-zone\">{extra_blocks}</section>' if extra_blocks else ''}"
+        f"{extra_blocks}"
         "</main></body></html>"
     )
 
@@ -1061,8 +1054,7 @@ def _build_minimal_report_html(markdown_text: str, title: str, extra_blocks: str
         "main{max-width:960px;margin:0 auto;padding:32px 20px}h1{font-size:28px;line-height:1.25;margin:0 0 20px}"
         "h2,h3{line-height:1.35;margin:24px 0 10px}p,ul,ol,table{margin:12px 0}table{width:100%;border-collapse:collapse}"
         "th,td{border:1px solid #e5e7eb;padding:8px 10px;text-align:left;vertical-align:top}th{background:#f9fafb}"
-        "pre{white-space:pre-wrap;overflow-wrap:anywhere}code{background:#f3f4f6;padding:1px 4px;border-radius:4px}"
-        "[data-chart-id]{width:100%;min-height:260px;margin:18px 0}</style>"
+        "pre{white-space:pre-wrap;overflow-wrap:anywhere}code{background:#f3f4f6;padding:1px 4px;border-radius:4px}</style>"
         f"</head><body><main><h1>{html.escape(safe_title)}</h1>{body_html}{extra_blocks}</main></body></html>"
     )
 
@@ -1394,36 +1386,8 @@ def _normalize_auto_report_bundle(report_bundle: dict, chart_specs: list[dict]) 
     normalized["title"] = str(normalized.get("title", "") or str(fallback_bundle.get("title", "")))
     normalized["summary"] = str(normalized.get("summary", "") or str(fallback_bundle.get("summary", "")))[:500]
     normalized["legacy_markdown"] = str(normalized.get("legacy_markdown", "") or str(fallback_bundle.get("legacy_markdown", "")))
-    chart_bindings = normalized.get("chart_bindings")
-    if not isinstance(chart_bindings, list):
-        chart_bindings = list(fallback_bundle.get("chart_bindings", []))
-    normalized["chart_bindings"] = chart_bindings
-    normalized["html_document"] = _ensure_chart_placeholders_in_report_html(normalized["html_document"], chart_bindings)
+    normalized["chart_bindings"] = []
     return normalized
-
-
-def _ensure_chart_placeholders_in_report_html(html_document: str, chart_bindings: list[dict]) -> str:
-    html_text = str(html_document or "")
-    if not html_text or not chart_bindings:
-        return html_text
-    existing_ids = set(re.findall(r'data-chart-id=["\']([^"\']+)["\']', html_text, flags=re.IGNORECASE))
-    missing_ids = [
-        str(item.get("chart_id", "")).strip()
-        for item in chart_bindings
-        if isinstance(item, dict)
-        and str(item.get("chart_id", "")).strip()
-        and str(item.get("chart_id", "")).strip() not in existing_ids
-    ]
-    if not missing_ids:
-        return html_text
-
-    chart_placeholders = "".join(
-        f'<div data-chart-id="{html.escape(chart_id)}" style="min-height:260px"></div>'
-        for chart_id in missing_ids
-    )
-    if "</body>" in html_text.lower():
-        return re.sub(r"</body>", chart_placeholders + "</body>", html_text, count=1, flags=re.IGNORECASE)
-    return html_text + chart_placeholders
 
 
 def _build_skill_proposal_fallback(
@@ -1696,6 +1660,8 @@ def _build_auto_iteration_payload(
     report_bundle: dict,
     stop_reason: str,
     max_rounds: int,
+    report_format: str,
+    report_style_instruction: str | None,
 ) -> dict:
     max_rounds_hit = stop_reason == "max_rounds_reached"
     report_title = str(report_bundle.get("title", "") or "")
@@ -1726,6 +1692,8 @@ def _build_auto_iteration_payload(
             "max_rounds": max_rounds,
             "max_rounds_hit": max_rounds_hit,
             "report_generated": bool(final_report_html or final_report_summary),
+            "report_format": report_format,
+            "report_style_instruction": str(report_style_instruction or ""),
         },
         "session_id": session_id,
         "session_patches": list(session.get("patches", [])),
@@ -2143,6 +2111,7 @@ def auto_analyze(req: AutoAnalyzeRequest, user: User = Depends(get_current_user)
                 provider=req.provider,
                 model=req.model,
                 report_format=req.report_format,
+                report_style_instruction=req.report_style_instruction,
             ) or {}
             if direct_report_md:
                 report_bundle["legacy_markdown"] = direct_report_md
@@ -2173,6 +2142,8 @@ def auto_analyze(req: AutoAnalyzeRequest, user: User = Depends(get_current_user)
                 report_bundle=report_bundle,
                 stop_reason=stop_reason,
                 max_rounds=max_rounds,
+                report_format=req.report_format,
+                report_style_instruction=req.report_style_instruction,
             )
             last_result = (loop_rounds[-1].get("result") if loop_rounds else {}) or {}
 
@@ -2257,6 +2228,11 @@ def regenerate_report(req: RegenerateReportRequest, user: User = Depends(get_cur
     )
 
     chart_specs = _collect_all_charts(loop_rounds)
+    resolved_style_instruction = str(
+        req.report_style_instruction
+        or (iteration.get("report_meta") or {}).get("report_style_instruction")
+        or ""
+    )
     report_bundle = generate_auto_analysis_report_bundle(
         message=iteration.get("message", ""),
         session_history=[],
@@ -2270,6 +2246,7 @@ def regenerate_report(req: RegenerateReportRequest, user: User = Depends(get_cur
         provider=None,
         model=None,
         report_format=req.report_format,
+        report_style_instruction=resolved_style_instruction,
     ) or {}
 
     report_bundle = _normalize_auto_report_bundle(report_bundle, chart_specs)
@@ -2283,6 +2260,7 @@ def regenerate_report(req: RegenerateReportRequest, user: User = Depends(get_cur
         "report_meta": {
             **(iteration.get("report_meta") or {}),
             "report_format": req.report_format,
+            "report_style_instruction": resolved_style_instruction,
             "regenerated_at": datetime.now().isoformat(),
         },
     })
