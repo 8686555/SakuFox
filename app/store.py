@@ -1920,6 +1920,30 @@ class DatabaseStore:
             return self._iter_to_dict(it) if it else None
 
 
+    def update_iteration(self, user_id: str, iteration_id: str, updates: dict) -> bool:
+        with self.SessionFactory() as sess:
+            it = sess.execute(
+                select(DBIteration).where(DBIteration.iteration_id == iteration_id, DBIteration.user_id == user_id)
+            ).scalar_one_or_none()
+            if not it:
+                return False
+            if "final_report_html" in updates:
+                it.final_report_html = updates.get("final_report_html", "")
+            if "final_report_md" in updates:
+                it.final_report_md = updates.get("final_report_md", "")
+            if "final_report_summary" in updates:
+                it.final_report_summary = updates.get("final_report_summary", "")
+            if "final_report_chart_bindings" in updates:
+                it.final_report_chart_bindings = json.dumps(updates.get("final_report_chart_bindings", []), ensure_ascii=False)
+            if "report_title" in updates:
+                it.report_title = updates.get("report_title", "")
+            if "report_meta" in updates:
+                existing_meta = json.loads(it.report_meta or "{}")
+                merged_meta = {**existing_meta, **updates.get("report_meta", {})}
+                it.report_meta = json.dumps(merged_meta, ensure_ascii=False)
+            sess.commit()
+            return True
+
 
     def list_sessions(self, user_id: str) -> list[dict]:
 

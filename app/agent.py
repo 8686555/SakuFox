@@ -1018,6 +1018,7 @@ def generate_auto_analysis_report_bundle(
     rounds_completed: int,
     provider: str | None = None,
     model: str | None = None,
+    report_format: str = "html",
 ) -> dict:
     lang_code = get_lang()
     report_language = "English" if lang_code == "en" else "简体中文"
@@ -1154,27 +1155,50 @@ def generate_auto_analysis_report_bundle(
     if not stage1_bundle["action_items"]:
         stage1_bundle["action_items"] = _extract_action_items({"action_items": _merge_loop_items("action_items")})
 
-    stage2_system_prompt = get_prompt(config.prompts, "report_bundle_system")
-    stage2_user_prompt = format_prompt(
-        config.prompts,
-        "report_bundle_user",
-        draft_title=stage1_bundle["title"],
-        draft_summary=stage1_bundle["summary"],
-        conclusions=json.dumps(stage1_bundle["conclusions"], ensure_ascii=False),
-        action_items=json.dumps(stage1_bundle["action_items"], ensure_ascii=False),
-        message=message,
-        stop_reason=stop_reason,
-        rounds_completed=rounds_completed,
-        knowledge_block=knowledge_block,
-        patches_block=patches_block,
-        history_block=history_block,
-        summary_rounds=summary_rounds,
-        iteration_materials_block=iteration_materials_block,
-        rows_preview=rows_preview,
-        report_language=report_language,
-        chart_hint=chart_hint,
-        chart_specs_block=chart_specs_block,
-    )
+    if report_format == "ppt":
+        stage2_system_prompt = get_prompt(config.prompts, "report_bundle_ppt_system")
+        stage2_user_prompt = format_prompt(
+            config.prompts,
+            "report_bundle_ppt_user",
+            draft_title=stage1_bundle["title"],
+            draft_summary=stage1_bundle["summary"],
+            conclusions=json.dumps(stage1_bundle["conclusions"], ensure_ascii=False),
+            action_items=json.dumps(stage1_bundle["action_items"], ensure_ascii=False),
+            message=message,
+            stop_reason=stop_reason,
+            rounds_completed=rounds_completed,
+            knowledge_block=knowledge_block,
+            patches_block=patches_block,
+            history_block=history_block,
+            summary_rounds=summary_rounds,
+            iteration_materials_block=iteration_materials_block,
+            rows_preview=rows_preview,
+            report_language=report_language,
+            chart_hint=chart_hint,
+            chart_specs_block=chart_specs_block,
+        )
+    else:
+        stage2_system_prompt = get_prompt(config.prompts, "report_bundle_system")
+        stage2_user_prompt = format_prompt(
+            config.prompts,
+            "report_bundle_user",
+            draft_title=stage1_bundle["title"],
+            draft_summary=stage1_bundle["summary"],
+            conclusions=json.dumps(stage1_bundle["conclusions"], ensure_ascii=False),
+            action_items=json.dumps(stage1_bundle["action_items"], ensure_ascii=False),
+            message=message,
+            stop_reason=stop_reason,
+            rounds_completed=rounds_completed,
+            knowledge_block=knowledge_block,
+            patches_block=patches_block,
+            history_block=history_block,
+            summary_rounds=summary_rounds,
+            iteration_materials_block=iteration_materials_block,
+            rows_preview=rows_preview,
+            report_language=report_language,
+            chart_hint=chart_hint,
+            chart_specs_block=chart_specs_block,
+        )
     stage2_chunks = (
         _call_openai_protocol(system_prompt=stage2_system_prompt, user_prompt=stage2_user_prompt, model=model, config=config)
         if selected_provider == "openai"

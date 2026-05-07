@@ -6,6 +6,7 @@ import re
 import uuid
 import time
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
@@ -59,6 +60,7 @@ from app.models import (
     SemanticWikiLintRequest,
     SQLToolboxExecuteRequest,
     SaveVirtualViewRequest,
+    RegenerateReportRequest,
 )
 from app.notebook_kernel import create_kernel, destroy_kernel
 from app.python_sandbox import run_python_pipeline
@@ -2140,6 +2142,7 @@ def auto_analyze(req: AutoAnalyzeRequest, user: User = Depends(get_current_user)
                 rounds_completed=len(loop_rounds),
                 provider=req.provider,
                 model=req.model,
+                report_format=req.report_format,
             ) or {}
             if direct_report_md:
                 report_bundle["legacy_markdown"] = direct_report_md
@@ -2223,6 +2226,76 @@ def auto_analyze(req: AutoAnalyzeRequest, user: User = Depends(get_current_user)
             yield json.dumps({"type": "error", "message": f"{internal_error}: {str(exc)}"}, ensure_ascii=False) + "\n"
 
     return StreamingResponse(stream_generator(), media_type="application/x-ndjson")
+
+
+@app.post("/api/regenerate-report")
+def regenerate_report(req: RegenerateReportRequest, user: User = Depends(get_current_user)):
+    """Regenerate report with different format."""
+    try:
+        require_permission(user, "execute", "chat")
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
+
+    iteration = store.get_iteration(user.user_id, req.iteration_id)
+    if not iteration:
+        raise HTTPException(status_code=404, detail="Iteration not found")
+
+    loop_rounds = iteration.get("loop_rounds", []) or []
+    if not loop_rounds:
+        raise HTTPException(status_code=400, detail="No analysis data found in iteration")
+
+    config = load_config()
+    sandbox = store.get_sandbox(iteration.get("sandbox_id", ""))
+    if not sandbox:
+        raise HTTPException(status_code=404, detail="Sandbox not found")
+
+    business_knowledge = _collect_business_knowledge(
+        sandbox,
+        iteration.get("sandbox_id", ""),
+        iteration.get("message", ""),
+        list(iteration.get("session_patches", []) or []),
+    )
+
+    chart_specs = _collect_all_charts(loop_rounds)
+    report_bundle = generate_auto_analysis_report_bundle(
+        message=iteration.get("message", ""),
+        session_history=[],
+        business_knowledge=business_knowledge,
+        session_patches=list(iteration.get("session_patches", []) or []),
+        loop_rounds=loop_rounds,
+        chart_specs=chart_specs,
+        final_result_rows=iteration.get("result_rows", []) or [],
+        stop_reason=iteration.get("stop_reason", "regenerated"),
+        rounds_completed=len(loop_rounds),
+        provider=None,
+        model=None,
+        report_format=req.report_format,
+    ) or {}
+
+    report_bundle = _normalize_auto_report_bundle(report_bundle, chart_specs)
+
+    store.update_iteration(user.user_id, req.iteration_id, {
+        "final_report_html": report_bundle.get("html_document", ""),
+        "final_report_md": report_bundle.get("legacy_markdown", ""),
+        "final_report_summary": report_bundle.get("summary", ""),
+        "final_report_chart_bindings": report_bundle.get("chart_bindings", []),
+        "report_title": report_bundle.get("title", ""),
+        "report_meta": {
+            **(iteration.get("report_meta") or {}),
+            "report_format": req.report_format,
+            "regenerated_at": datetime.now().isoformat(),
+        },
+    })
+
+    return {
+        "title": report_bundle.get("title", ""),
+        "summary": report_bundle.get("summary", ""),
+        "html_document": report_bundle.get("html_document", ""),
+        "chart_bindings": report_bundle.get("chart_bindings", []),
+        "legacy_markdown": report_bundle.get("legacy_markdown", ""),
+        "conclusions": report_bundle.get("conclusions", []),
+        "action_items": report_bundle.get("action_items", []),
+    }
 
 
 @app.post("/api/chat/feedback")

@@ -27,6 +27,13 @@ class AutoAnalyzeRequest(IterateRequest):
     message: str = ""
     max_rounds: int | None = Field(default=None, ge=1)
     trace_mode: str = Field(default="full", pattern="^full$")
+    report_format: str = Field(default="html", pattern="^(html|ppt)$")
+
+
+class RegenerateReportRequest(BaseModel):
+    """Regenerate report with different format."""
+    iteration_id: str
+    report_format: str = Field(pattern="^(html|ppt)$")
 
 
 class FeedbackRequest(BaseModel):

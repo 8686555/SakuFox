@@ -350,6 +350,7 @@
     const loading = qs("loading");
     const btnBack = qs("btnBack");
     const btnPrint = qs("btnPrint");
+    const formatSelect = qs("reportFormatSelect");
     const iterationId = getQueryParam("iteration_id");
     const printMode = getQueryParam("print") === "1";
     const lang = getLang();
@@ -371,39 +372,102 @@
       return;
     }
 
-    try {
-      const data = await fetchReport(iterationId, lang);
-      const htmlDocument = normalizeHtmlDocument(data.final_report_html || "");
-      const chartBindings = data.final_report_chart_bindings || [];
-      if (!htmlDocument) {
-        showError(t(lang, "emptyReport"));
-        return;
-      }
-
-      frame.onload = () => {
-        try {
-          const doc = frame.contentDocument;
-          if (!doc) return;
-          if (doc.documentElement) doc.documentElement.style.minHeight = "100%";
-          if (doc.body) doc.body.style.minHeight = "100%";
-          mountCharts(doc, chartBindings, lang);
-          syncFrameHeight(frame);
-          setTimeout(() => syncFrameHeight(frame), 250);
-          setTimeout(() => syncFrameHeight(frame), 900);
-          if (printMode) {
-            setTimeout(() => printFrame(frame), 300);
-          }
-        } catch (err) {
-          showError(`${t(lang, "renderFailed")}: ${err.message || err}`);
+    async function loadReport() {
+      try {
+        const data = await fetchReport(iterationId, lang);
+        const htmlDocument = normalizeHtmlDocument(data.final_report_html || "");
+        const chartBindings = data.final_report_chart_bindings || [];
+        if (!htmlDocument) {
+          showError(t(lang, "emptyReport"));
+          return;
         }
-      };
-      frame.srcdoc = htmlDocument;
-      frame.style.display = "block";
-      window.addEventListener("resize", () => syncFrameHeight(frame));
-      if (loading) loading.style.display = "none";
-    } catch (err) {
-      showError(err.message || String(err));
+
+        frame.onload = () => {
+          try {
+            const doc = frame.contentDocument;
+            if (!doc) return;
+            if (doc.documentElement) doc.documentElement.style.minHeight = "100%";
+            if (doc.body) doc.body.style.minHeight = "100%";
+            mountCharts(doc, chartBindings, lang);
+            syncFrameHeight(frame);
+            setTimeout(() => syncFrameHeight(frame), 250);
+            setTimeout(() => syncFrameHeight(frame), 900);
+            if (printMode) {
+              setTimeout(() => printFrame(frame), 300);
+            }
+          } catch (err) {
+            showError(`${t(lang, "renderFailed")}: ${err.message || err}`);
+          }
+        };
+        frame.srcdoc = htmlDocument;
+        frame.style.display = "block";
+        window.addEventListener("resize", () => syncFrameHeight(frame));
+        if (loading) loading.style.display = "none";
+      } catch (err) {
+        showError(err.message || String(err));
+      }
     }
+
+    async function regenerateReport(format) {
+      if (loading) {
+        loading.style.display = "block";
+        loading.textContent = lang === "en" ? "Regenerating report..." : "正在重新生成报告...";
+      }
+      frame.style.display = "none";
+
+      try {
+        const headers = { "Content-Type": "application/json", "X-Language": lang };
+        const token = getToken();
+        if (token) headers.Authorization = `Bearer ${token}`;
+        const response = await fetch("/api/regenerate-report", {
+          method: "POST",
+          headers,
+          credentials: "include",
+          body: JSON.stringify({ iteration_id: iterationId, report_format: format }),
+        });
+        if (!response.ok) {
+          throw new Error(`${t(lang, "loadFailed")}: ${response.status}`);
+        }
+        const data = await response.json();
+        const htmlDocument = normalizeHtmlDocument(data.html_document || "");
+        const chartBindings = data.chart_bindings || [];
+        if (!htmlDocument) {
+          showError(t(lang, "emptyReport"));
+          return;
+        }
+
+        frame.onload = () => {
+          try {
+            const doc = frame.contentDocument;
+            if (!doc) return;
+            if (doc.documentElement) doc.documentElement.style.minHeight = "100%";
+            if (doc.body) doc.body.style.minHeight = "100%";
+            mountCharts(doc, chartBindings, lang);
+            syncFrameHeight(frame);
+            setTimeout(() => syncFrameHeight(frame), 250);
+            setTimeout(() => syncFrameHeight(frame), 900);
+          } catch (err) {
+            showError(`${t(lang, "renderFailed")}: ${err.message || err}`);
+          }
+        };
+        frame.srcdoc = htmlDocument;
+        frame.style.display = "block";
+        if (loading) loading.style.display = "none";
+      } catch (err) {
+        showError(err.message || String(err));
+      }
+    }
+
+    if (formatSelect) {
+      formatSelect.addEventListener("change", (e) => {
+        const format = e.target.value;
+        if (format) {
+          regenerateReport(format);
+        }
+      });
+    }
+
+    await loadReport();
   }
 
   init();
