@@ -97,5 +97,11 @@
   "report_format_ppt": "PPT",
   "report_format_custom": "自定义",
   "report_style_placeholder": "输入展示方式，例如：投研简报 / 管理层汇报页",
-  "report_style_required": "请输入自定义展示方式"
+  "report_style_required": "请输入自定义展示方式",
+  "chat_plus_title": "更多",
+  "summarize_session_html": "总结当前会话为 HTML",
+  "session_html_summary_title": "HTML 总结",
+  "session_html_summary_running": "正在总结当前会话为 HTML...",
+  "session_html_summary_done": "已将当前会话总结为 HTML。",
+  "open_report": "打开报告"
 }

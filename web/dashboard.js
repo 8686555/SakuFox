@@ -32,6 +32,9 @@ const sessionList = document.getElementById("sessionList");
 
 const autoReportFormatSelect = document.getElementById("autoReportFormatSelect");
 const autoReportStyleInput = document.getElementById("autoReportStyleInput");
+const chatPlusBtn = document.getElementById("chatPlusBtn");
+const chatPlusMenu = document.getElementById("chatPlusMenu");
+const summarizeSessionHtmlBtn = document.getElementById("summarizeSessionHtmlBtn");
 
 
 
@@ -269,12 +272,70 @@ function syncAutoReportStyleControls() {
 }
 
 function getAutoReportPreferences() {
-  const format = autoReportFormatSelect ? autoReportFormatSelect.value || "report" : "report";
+  const format = autoReportFormatSelect ? autoReportFormatSelect.value || "ppt" : "ppt";
   const styleInstruction = autoReportStyleInput ? autoReportStyleInput.value.trim() : "";
   return {
     format,
     styleInstruction,
   };
+}
+
+function setChatPlusMenuOpen(open) {
+  if (!chatPlusMenu || !chatPlusBtn) return;
+  chatPlusMenu.classList.toggle("open", open);
+  chatPlusMenu.setAttribute("aria-hidden", open ? "false" : "true");
+  chatPlusBtn.classList.toggle("active", open);
+}
+
+async function handleSummarizeSessionHtml() {
+  setChatPlusMenuOpen(false);
+  if (!sessionId) {
+    alert(i18n.t("no_record") || "当前对话暂无记录。");
+    return;
+  }
+
+  const wrapper = createAiMessageContainer();
+  updateAiCard(
+    wrapper,
+    i18n.t("session_html_summary_title") || "HTML 总结",
+    `<div class="analysis-status-line">${i18n.t("session_html_summary_running") || "正在总结当前会话为 HTML..."}</div>`
+  );
+
+  try {
+    const data = await api("/api/chat/session-html-summary", {
+      method: "POST",
+      body: JSON.stringify({ session_id: sessionId }),
+    });
+    const reportLang = (window.i18n && i18n.lang) || localStorage.getItem("lang") || "zh";
+    const baseUrl = data.report_url || "";
+    const reportUrl = baseUrl
+      ? `${baseUrl}${baseUrl.includes("?") ? "&" : "?"}lang=${encodeURIComponent(reportLang)}`
+      : "";
+    const openText = i18n.t("open_report") || "打开报告";
+    const message = data.assistant_message || data.summary || (i18n.t("session_html_summary_done") || "已将当前会话总结为 HTML。");
+    updateAiCard(
+      wrapper,
+      i18n.t("session_html_summary_title") || "HTML 总结",
+      `
+        <div class="analysis-report-summary">${escapeHtml(message)}</div>
+        ${reportUrl ? `<div class="analysis-report-actions"><button class="btn btn-outline btn-sm open-session-summary-report-btn" data-url="${escapeHtml(reportUrl)}"><i class="fa-solid fa-arrow-up-right-from-square"></i> ${escapeHtml(openText)}</button></div>` : ""}
+      `
+    );
+    wrapper.querySelectorAll(".open-session-summary-report-btn").forEach((btn) => {
+      btn.onclick = () => {
+        const url = btn.getAttribute("data-url");
+        if (url) window.open(url, "_blank", "noopener");
+      };
+    });
+    if (reportUrl) window.open(reportUrl, "_blank", "noopener");
+    refreshSessions();
+  } catch (err) {
+    updateAiCard(
+      wrapper,
+      i18n.t("request_failed") || "请求失败",
+      `<div style="color:#ef4444">${escapeHtml(err.message || String(err))}</div>`
+    );
+  }
 }
 
 function renderSkillContextSnapshot(snapshot) {
@@ -2751,6 +2812,22 @@ document.getElementById("autoAnalyzeBtn").onclick = () => {
 if (autoReportFormatSelect) {
   autoReportFormatSelect.addEventListener("change", syncAutoReportStyleControls);
   syncAutoReportStyleControls();
+}
+
+if (chatPlusBtn && chatPlusMenu) {
+  chatPlusBtn.addEventListener("click", (event) => {
+    event.stopPropagation();
+    setChatPlusMenuOpen(!chatPlusMenu.classList.contains("open"));
+  });
+  document.addEventListener("click", (event) => {
+    if (!chatPlusMenu.classList.contains("open")) return;
+    if (chatPlusMenu.contains(event.target) || chatPlusBtn.contains(event.target)) return;
+    setChatPlusMenuOpen(false);
+  });
+}
+
+if (summarizeSessionHtmlBtn) {
+  summarizeSessionHtmlBtn.addEventListener("click", handleSummarizeSessionHtml);
 }
 
 

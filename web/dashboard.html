@@ -220,19 +220,16 @@
 
             </div>
 
-            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
-              <select id="autoReportFormatSelect" class="btn btn-outline btn-lg" style="min-width:120px;">
-                <option value="report" data-i18n="report_format_report">报告</option>
-                <option value="ppt" data-i18n="report_format_ppt">PPT</option>
-                <option value="custom" data-i18n="report_format_custom">自定义</option>
-              </select>
-              <input
-                id="autoReportStyleInput"
-                data-i18n="report_style_placeholder"
-                placeholder="输入展示方式，例如：投研简报 / 管理层汇报页"
-                autocomplete="off"
-                style="display:none;min-width:260px;max-width:360px;padding:12px 14px;border:1px solid var(--border);border-radius:12px;background:#fff;color:var(--text-main);"
-              />
+            <div class="chat-plus-wrap">
+              <button id="chatPlusBtn" class="chat-plus-btn" type="button" data-i18n-title="chat_plus_title" title="更多">
+                <i class="fa-solid fa-plus"></i>
+              </button>
+              <div id="chatPlusMenu" class="chat-plus-menu" aria-hidden="true">
+                <button id="summarizeSessionHtmlBtn" type="button" class="chat-plus-menu-item">
+                  <i class="fa-solid fa-file-code"></i>
+                  <span data-i18n="summarize_session_html">总结当前会话为 HTML</span>
+                </button>
+              </div>
             </div>
 
             <button id="autoAnalyzeBtn" class="btn btn-outline btn-lg" data-i18n="one_click_analyze">一键分析</button>

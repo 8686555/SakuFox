@@ -27,7 +27,7 @@ class AutoAnalyzeRequest(IterateRequest):
     message: str = ""
     max_rounds: int | None = Field(default=None, ge=1)
     trace_mode: str = Field(default="full", pattern="^full$")
-    report_format: str = Field(default="report", pattern="^(report|ppt|custom)$")
+    report_format: str = Field(default="ppt", pattern="^(report|ppt|custom)$")
     report_style_instruction: str | None = None
 
 
@@ -36,6 +36,20 @@ class RegenerateReportRequest(BaseModel):
     iteration_id: str
     report_format: str = Field(pattern="^(report|ppt|custom)$")
     report_style_instruction: str | None = None
+
+
+class ReportChatRequest(BaseModel):
+    """Revise a generated HTML report from a chat instruction."""
+    message: str
+    provider: str | None = Field(default=None, pattern="^(openai|anthropic|mock)$")
+    model: str | None = None
+
+
+class SessionHtmlSummaryRequest(BaseModel):
+    """Summarize the current session history as an HTML report."""
+    session_id: str
+    provider: str | None = Field(default=None, pattern="^(openai|anthropic|mock)$")
+    model: str | None = None
 
 
 class FeedbackRequest(BaseModel):

@@ -709,6 +709,94 @@ PROMPTS = {
             "兜底源 markdown，仅作为证据:\n{fallback_markdown}\n"
         ),
     },
+    "report_chat_revision_system": {
+        "en": (
+            "You are an analytics HTML presentation editor. Return valid JSON only. "
+            "Revise the current standalone HTML according to the user's instruction while preserving factual accuracy. "
+            "Do not include external scripts, external stylesheets, or inline JavaScript."
+        ),
+        "zh": (
+            "你是分析型 HTML 演示稿编辑器。只返回合法 JSON。"
+            "请根据用户要求修改当前独立 HTML，同时保持事实准确。"
+            "不要包含外部脚本、外部样式表或内联 JavaScript。"
+        ),
+    },
+    "report_chat_revision_user": {
+        "en": (
+            "Return valid JSON only. No markdown fences.\n"
+            "Schema:\n"
+            "{{\"assistant_message\": string, \"title\": string, \"summary\": string, \"chart_bindings\": [], \"html_document\": string}}\n\n"
+            "User instruction:\n{instruction}\n\n"
+            "Language requirement: {report_language}.\n\n"
+            "Context, including current HTML and analysis evidence:\n{context_block}\n\n"
+            "Requirements:\n"
+            "- Revise the provided current_html instead of inventing a new unrelated page.\n"
+            "- Keep the output as a complete standalone HTML document with <!doctype html>, <html>, <head>, <style>, and <body>.\n"
+            "- Keep it PPT/presentation-friendly unless the user explicitly requests another form.\n"
+            "- Preserve supported findings and do not add claims that are not supported by the context.\n"
+            "- html_document must contain real HTML tags, not escaped visible tags or JSON text.\n"
+            "- assistant_message should briefly describe what changed."
+        ),
+        "zh": (
+            "Return valid JSON only. 只返回合法 JSON。不要使用 markdown 代码围栏。\n"
+            "Schema:\n"
+            "{{\"assistant_message\": string, \"title\": string, \"summary\": string, \"chart_bindings\": [], \"html_document\": string}}\n\n"
+            "用户修改要求:\n{instruction}\n\n"
+            "语言要求: {report_language}。\n\n"
+            "上下文，包含当前 HTML 和分析证据:\n{context_block}\n\n"
+            "要求:\n"
+            "- 基于 current_html 修改，不要生成无关的新页面。\n"
+            "- 输出完整独立 HTML 文档，包含 <!doctype html>、<html>、<head>、<style> 和 <body>。\n"
+            "- 除非用户明确要求其他形式，否则保持 PPT/演示友好的展示方式。\n"
+            "- 保留有证据支持的发现，不要增加上下文不支持的结论。\n"
+            "- html_document 必须包含真实 HTML 标签，不能是转义可见标签或 JSON 文本。\n"
+            "- assistant_message 简要说明本次修改了什么。"
+        ),
+    },
+    "session_html_summary_system": {
+        "en": (
+            "You are a principal analytics presentation designer. Return valid JSON only. "
+            "Summarize the provided session history as a self-contained PPT-style HTML presentation."
+        ),
+        "zh": (
+            "你是首席分析演示设计师。只返回合法 JSON。"
+            "请把提供的会话历史总结成自包含 PPT 风格 HTML 演示稿。"
+        ),
+    },
+    "session_html_summary_user": {
+        "en": (
+            "Return valid JSON only. No markdown fences.\n"
+            "Schema:\n"
+            "{{\"assistant_message\": string, \"title\": string, \"summary\": string, \"chart_bindings\": [], \"html_document\": string}}\n\n"
+            "Session id: {session_id}\n"
+            "Language requirement: {report_language}.\n\n"
+            "Session history context:\n{context_block}\n\n"
+            "Requirements:\n"
+            "- Summarize only the provided session history, not other sessions.\n"
+            "- Return a complete standalone HTML document with <!doctype html>, <html>, <head>, <style>, and <body>.\n"
+            "- Make it PPT-style: 16:9 slide sections, strong first slide, concise findings, evidence, and action items.\n"
+            "- Use substantial CSS, responsive sizing, and print-friendly slides.\n"
+            "- Do not include external scripts, external stylesheets, or inline JavaScript.\n"
+            "- html_document must contain real HTML tags, not escaped visible tags or JSON text.\n"
+            "- Keep content faithful to the session evidence."
+        ),
+        "zh": (
+            "Return valid JSON only. 只返回合法 JSON。不要使用 markdown 代码围栏。\n"
+            "Schema:\n"
+            "{{\"assistant_message\": string, \"title\": string, \"summary\": string, \"chart_bindings\": [], \"html_document\": string}}\n\n"
+            "会话 ID: {session_id}\n"
+            "语言要求: {report_language}。\n\n"
+            "会话历史上下文:\n{context_block}\n\n"
+            "要求:\n"
+            "- 只总结提供的当前会话历史，不要引入其他会话。\n"
+            "- 返回完整独立 HTML 文档，包含 <!doctype html>、<html>、<head>、<style> 和 <body>。\n"
+            "- 做成 PPT 风格：16:9 幻灯片章节、清晰首页、精炼发现、证据与行动建议。\n"
+            "- 使用充分 CSS、响应式尺寸和适合打印/导出的幻灯片排版。\n"
+            "- 不要包含外部脚本、外部样式表或内联 JavaScript。\n"
+            "- html_document 必须包含真实 HTML 标签，不能是转义可见标签或 JSON 文本。\n"
+            "- 内容必须忠于会话证据。"
+        ),
+    },
     "skill_proposal_system": {
         "en": "You are a business knowledge extraction expert. Please extract a reusable 'analysis skill' from the user's question, analysis process, and conclusions.",
         "zh": "你是一个业务知识提炼专家。请根据用户的提问、分析过程和结论，提取一个可复用的“分析经验”。",

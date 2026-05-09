@@ -1934,13 +1934,21 @@ class DatabaseStore:
             if "final_report_summary" in updates:
                 it.final_report_summary = updates.get("final_report_summary", "")
             if "final_report_chart_bindings" in updates:
-                it.final_report_chart_bindings = json.dumps(updates.get("final_report_chart_bindings", []), ensure_ascii=False)
+                it.final_report_chart_bindings = updates.get("final_report_chart_bindings", [])
             if "report_title" in updates:
                 it.report_title = updates.get("report_title", "")
             if "report_meta" in updates:
-                existing_meta = json.loads(it.report_meta or "{}")
+                if isinstance(it.report_meta, dict):
+                    existing_meta = it.report_meta
+                elif isinstance(it.report_meta, str):
+                    try:
+                        existing_meta = json.loads(it.report_meta or "{}")
+                    except json.JSONDecodeError:
+                        existing_meta = {}
+                else:
+                    existing_meta = {}
                 merged_meta = {**existing_meta, **updates.get("report_meta", {})}
-                it.report_meta = json.dumps(merged_meta, ensure_ascii=False)
+                it.report_meta = merged_meta
             sess.commit()
             return True
 

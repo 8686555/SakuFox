@@ -23,8 +23,10 @@ from app.agent import (
     synthesize_iteration_result,
     generate_auto_analysis_report,
     generate_auto_analysis_report_bundle,
+    revise_report_html_document,
     generate_data_insight,
     generate_skill_proposal,
+    summarize_session_history_as_html,
 )
 from app.auth import auth_manager, get_current_user, login_with_ldap, login_with_oauth
 from app.authorization import (
@@ -61,6 +63,8 @@ from app.models import (
     SQLToolboxExecuteRequest,
     SaveVirtualViewRequest,
     RegenerateReportRequest,
+    ReportChatRequest,
+    SessionHtmlSummaryRequest,
 )
 from app.notebook_kernel import create_kernel, destroy_kernel
 from app.python_sandbox import run_python_pipeline
@@ -1722,6 +1726,66 @@ def _build_auto_iteration_payload(
         "session_patches": list(session.get("patches", [])),
     }
 
+
+def _build_session_summary_iteration_payload(
+    *,
+    session_id: str,
+    session: dict,
+    history: list[dict],
+    report_bundle: dict,
+) -> dict:
+    all_steps: list[dict] = []
+    all_conclusions: list = []
+    all_hypotheses: list = []
+    all_actions: list[str] = []
+    all_tools: list[str] = []
+    all_charts: list[dict] = []
+    all_rows: list[dict] = []
+    for iteration in history:
+        all_steps.extend(iteration.get("steps") or [])
+        all_conclusions.extend(iteration.get("conclusions") or [])
+        all_hypotheses.extend(iteration.get("hypotheses") or [])
+        all_actions.extend(str(item) for item in (iteration.get("action_items") or []))
+        all_charts.extend(iteration.get("chart_specs") or [])
+        if iteration.get("result_rows"):
+            all_rows = iteration.get("result_rows") or all_rows
+        for tool in iteration.get("tools_used") or []:
+            tool_text = str(tool)
+            if tool_text and tool_text not in all_tools:
+                all_tools.append(tool_text)
+
+    now = datetime.now().isoformat()
+    return {
+        "mode": "auto_analysis",
+        "message": "Session HTML summary",
+        "steps": all_steps[:120],
+        "conclusions": all_conclusions[:80],
+        "hypotheses": all_hypotheses[:40],
+        "action_items": all_actions[:80],
+        "tools_used": all_tools,
+        "result_rows": all_rows[:100],
+        "chart_specs": all_charts[:50],
+        "loop_rounds": [],
+        "final_report_md": report_bundle.get("legacy_markdown", ""),
+        "report_title": report_bundle.get("title", ""),
+        "final_report_html": report_bundle.get("html_document", ""),
+        "final_report_summary": report_bundle.get("summary", ""),
+        "final_report_chart_bindings": report_bundle.get("chart_bindings", []),
+        "report_meta": {
+            "stop_reason": "session_html_summary",
+            "rounds_completed": len(history),
+            "report_generated": True,
+            "report_format": "ppt",
+            "report_style_instruction": "",
+            "source_session_id": session_id,
+            "summary_generated_at": now,
+        },
+        "session_id": session_id,
+        "session_patches": list(session.get("patches", []) or []),
+        "sandbox_id": session.get("sandbox_id", ""),
+        "created_at": now,
+    }
+
 # ── Auth ──────────────────────────────────────────────────────────────
 
 
@@ -2317,6 +2381,143 @@ def regenerate_report(req: RegenerateReportRequest, user: User = Depends(get_cur
         "legacy_markdown": report_bundle.get("legacy_markdown", ""),
         "conclusions": report_bundle.get("conclusions", []),
         "action_items": report_bundle.get("action_items", []),
+    }
+
+
+@app.post("/api/reports/iterations/{iteration_id}/chat")
+def chat_with_iteration_report(iteration_id: str, req: ReportChatRequest, user: User = Depends(get_current_user)):
+    """Revise an existing generated HTML report from a chat instruction."""
+    try:
+        require_permission(user, "execute", "chat")
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
+
+    message = str(req.message or "").strip()
+    if not message:
+        raise HTTPException(status_code=400, detail="message is required")
+
+    iteration = store.get_iteration(user.user_id, iteration_id)
+    if not iteration:
+        raise HTTPException(status_code=404, detail="iteration not found")
+    if (iteration.get("mode") or "") != "auto_analysis":
+        raise HTTPException(status_code=400, detail="iteration is not an auto-analysis report")
+
+    session_id = str(iteration.get("session_id") or "")
+    history = store.get_iteration_history(user.user_id, session_id) if session_id else []
+    current_html = str(iteration.get("final_report_html", "") or "")
+    report_bundle = revise_report_html_document(
+        instruction=message,
+        current_html=current_html,
+        iteration=iteration,
+        session_history=history,
+        provider=req.provider,
+        model=req.model,
+    )
+    report_bundle = _normalize_auto_report_bundle(report_bundle, iteration.get("chart_specs") or [])
+
+    previous_meta = iteration.get("report_meta") or {}
+    revision_history = list(previous_meta.get("report_chat_history") or [])
+    revision_history.append(
+        {
+            "role": "user",
+            "content": message,
+            "created_at": datetime.now().isoformat(),
+        }
+    )
+    revision_history.append(
+        {
+            "role": "assistant",
+            "content": report_bundle.get("assistant_message", ""),
+            "created_at": datetime.now().isoformat(),
+        }
+    )
+    revision_history = revision_history[-40:]
+
+    store.update_iteration(user.user_id, iteration_id, {
+        "final_report_html": report_bundle.get("html_document", ""),
+        "final_report_md": report_bundle.get("legacy_markdown", iteration.get("final_report_md", "")),
+        "final_report_summary": report_bundle.get("summary", ""),
+        "final_report_chart_bindings": report_bundle.get("chart_bindings", []),
+        "report_title": report_bundle.get("title", ""),
+        "report_meta": {
+            **previous_meta,
+            "report_format": previous_meta.get("report_format") or "ppt",
+            "report_chat_history": revision_history,
+            "last_report_chat_at": datetime.now().isoformat(),
+        },
+    })
+
+    return {
+        "iteration_id": iteration_id,
+        "session_id": session_id,
+        "title": report_bundle.get("title", ""),
+        "summary": report_bundle.get("summary", ""),
+        "assistant_message": report_bundle.get("assistant_message", ""),
+        "html_document": report_bundle.get("html_document", ""),
+        "chart_bindings": report_bundle.get("chart_bindings", []),
+        "report_meta": {
+            **previous_meta,
+            "report_format": previous_meta.get("report_format") or "ppt",
+            "report_chat_history": revision_history,
+        },
+    }
+
+
+@app.post("/api/chat/session-html-summary")
+def summarize_chat_session_as_html(req: SessionHtmlSummaryRequest, user: User = Depends(get_current_user)):
+    """Summarize the current session history as a PPT-style HTML report."""
+    try:
+        require_permission(user, "execute", "chat")
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
+
+    session_id = str(req.session_id or "").strip()
+    if not session_id:
+        raise HTTPException(status_code=400, detail="session_id is required")
+    session = store.get_session(user.user_id, session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="session not found")
+    sandbox_id = str(session.get("sandbox_id") or "").strip()
+    if sandbox_id:
+        try:
+            assert_sandbox_access(user, sandbox_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+        except PermissionError as exc:
+            raise HTTPException(status_code=403, detail=str(exc))
+
+    history = store.get_iteration_history(user.user_id, session_id)
+    if not history:
+        raise HTTPException(status_code=400, detail="session has no analysis history")
+
+    report_bundle = summarize_session_history_as_html(
+        session_id=session_id,
+        iterations=history,
+        provider=req.provider,
+        model=req.model,
+    )
+    chart_specs: list[dict] = []
+    for iteration in history:
+        chart_specs.extend(iteration.get("chart_specs") or [])
+    report_bundle = _normalize_auto_report_bundle(report_bundle, chart_specs)
+    iteration_payload = _build_session_summary_iteration_payload(
+        session_id=session_id,
+        session=session,
+        history=history,
+        report_bundle=report_bundle,
+    )
+    iteration_id = store.append_iteration(user.user_id, session_id, iteration_payload)
+    report_url = _build_iteration_report_url(iteration_id)
+
+    return {
+        "iteration_id": iteration_id,
+        "session_id": session_id,
+        "report_url": report_url,
+        "title": report_bundle.get("title", ""),
+        "summary": report_bundle.get("summary", ""),
+        "assistant_message": report_bundle.get("assistant_message", ""),
+        "html_document": report_bundle.get("html_document", ""),
+        "chart_bindings": report_bundle.get("chart_bindings", []),
     }
 
 

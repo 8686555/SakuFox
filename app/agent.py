@@ -1319,6 +1319,230 @@ def generate_auto_analysis_report_bundle(
     return stage2_bundle
 
 
+def revise_report_html_document(
+    *,
+    instruction: str,
+    current_html: str,
+    iteration: dict,
+    session_history: list[dict],
+    provider: str | None = None,
+    model: str | None = None,
+) -> dict:
+    lang_code = get_lang()
+    report_language = "English" if lang_code == "en" else "简体中文"
+    config = load_config()
+    selected_provider = (provider or config.llm_provider).lower()
+    title = str(iteration.get("report_title", "") or ("Analysis Report" if lang_code == "en" else "分析报告"))
+    summary = str(iteration.get("final_report_summary", "") or "")
+    fallback_markdown = str(iteration.get("final_report_md", "") or summary or title)
+    chart_specs = _collect_chart_specs_from_iterations([iteration])
+    current_html_text = str(current_html or iteration.get("final_report_html", "") or "").strip()
+
+    if selected_provider not in {"openai", "anthropic"}:
+        return {
+            "title": title,
+            "summary": summary,
+            "assistant_message": "HTML kept unchanged." if lang_code == "en" else "已保留当前 HTML，可切换真实模型后继续修改。",
+            "html_document": current_html_text or _build_polished_fallback_report_html(fallback_markdown, title=title),
+            "chart_bindings": [],
+        }
+
+    context = {
+        "instruction": instruction,
+        "current_title": title,
+        "current_summary": summary,
+        "current_html": current_html_text[:50000],
+        "iteration": _compact_iteration_for_html(iteration),
+        "session_history": [_compact_iteration_for_html(item) for item in session_history[-10:]],
+    }
+    system_prompt = get_prompt(config.prompts, "report_chat_revision_system")
+    user_prompt = format_prompt(
+        config.prompts,
+        "report_chat_revision_user",
+        report_language=report_language,
+        instruction=str(instruction or "").strip(),
+        context_block=json.dumps(context, ensure_ascii=False, default=str)[:65000],
+    )
+    chunks = (
+        _call_openai_protocol(system_prompt=system_prompt, user_prompt=user_prompt, model=model, config=config)
+        if selected_provider == "openai"
+        else _call_anthropic_protocol(system_prompt=system_prompt, user_prompt=user_prompt, model=model, config=config)
+    )
+    raw = "".join(chunks).strip()
+    parsed = _parse_report_bundle_json(raw) or {}
+    if not parsed:
+        extracted = _extract_html_document(raw)
+        if extracted:
+            parsed = {"title": title, "summary": summary, "html_document": extracted, "chart_bindings": []}
+    fallback_bundle = {
+        "title": title,
+        "summary": summary,
+        "html_document": current_html_text or _build_polished_fallback_report_html(fallback_markdown, title=title),
+        "chart_bindings": [],
+        "legacy_markdown": fallback_markdown,
+    }
+    normalized = _normalize_report_bundle(parsed, fallback_bundle, chart_specs)
+    normalized["title"] = str(normalized.get("title", "") or title)
+    normalized["summary"] = str(normalized.get("summary", "") or summary)
+    normalized["assistant_message"] = str(
+        parsed.get("assistant_message")
+        or parsed.get("message")
+        or ("Updated the HTML report." if lang_code == "en" else "已按要求更新 HTML 展示。")
+    )
+    normalized["chart_bindings"] = []
+    return normalized
+
+
+def summarize_session_history_as_html(
+    *,
+    session_id: str,
+    iterations: list[dict],
+    provider: str | None = None,
+    model: str | None = None,
+) -> dict:
+    lang_code = get_lang()
+    report_language = "English" if lang_code == "en" else "简体中文"
+    title = "Session HTML Summary" if lang_code == "en" else "会话 HTML 总结"
+    compact_iterations = [_compact_iteration_for_html(item) for item in iterations]
+    fallback_markdown = _build_session_summary_markdown(compact_iterations, title)
+    fallback_html = _build_polished_fallback_report_html(fallback_markdown, title=title)
+    chart_specs = _collect_chart_specs_from_iterations(iterations)
+
+    config = load_config()
+    selected_provider = (provider or config.llm_provider).lower()
+    if selected_provider not in {"openai", "anthropic"}:
+        return {
+            "title": title,
+            "summary": f"{len(iterations)} iterations summarized." if lang_code == "en" else f"已汇总 {len(iterations)} 轮历史分析。",
+            "assistant_message": "Session history summarized as HTML." if lang_code == "en" else "已将当前会话历史总结为 HTML。",
+            "html_document": fallback_html,
+            "chart_bindings": [],
+            "legacy_markdown": fallback_markdown,
+        }
+
+    context = {
+        "session_id": session_id,
+        "iterations": compact_iterations,
+    }
+    system_prompt = get_prompt(config.prompts, "session_html_summary_system")
+    user_prompt = format_prompt(
+        config.prompts,
+        "session_html_summary_user",
+        report_language=report_language,
+        session_id=session_id,
+        context_block=json.dumps(context, ensure_ascii=False, default=str)[:65000],
+    )
+    chunks = (
+        _call_openai_protocol(system_prompt=system_prompt, user_prompt=user_prompt, model=model, config=config)
+        if selected_provider == "openai"
+        else _call_anthropic_protocol(system_prompt=system_prompt, user_prompt=user_prompt, model=model, config=config)
+    )
+    raw = "".join(chunks).strip()
+    parsed = _parse_report_bundle_json(raw) or {}
+    if not parsed:
+        extracted = _extract_html_document(raw)
+        if extracted:
+            parsed = {"title": title, "summary": "", "html_document": extracted, "chart_bindings": []}
+    fallback_bundle = {
+        "title": title,
+        "summary": "",
+        "html_document": fallback_html,
+        "chart_bindings": [],
+        "legacy_markdown": fallback_markdown,
+    }
+    normalized = _normalize_report_bundle(parsed, fallback_bundle, chart_specs)
+    normalized["title"] = str(normalized.get("title", "") or title)
+    normalized["summary"] = str(normalized.get("summary", "") or fallback_bundle["summary"])
+    normalized["assistant_message"] = str(
+        parsed.get("assistant_message")
+        or parsed.get("message")
+        or ("Session history summarized as HTML." if lang_code == "en" else "已将当前会话历史总结为 HTML。")
+    )
+    normalized["chart_bindings"] = []
+    normalized["legacy_markdown"] = str(normalized.get("legacy_markdown", "") or fallback_markdown)
+    return normalized
+
+
+def _compact_iteration_for_html(iteration: dict) -> dict:
+    report_meta = iteration.get("report_meta") or {}
+    return {
+        "iteration_id": iteration.get("iteration_id", ""),
+        "mode": iteration.get("mode", "manual"),
+        "message": str(iteration.get("message", "") or "")[:1200],
+        "conclusions": (iteration.get("conclusions") or [])[:12],
+        "hypotheses": (iteration.get("hypotheses") or [])[:8],
+        "action_items": (iteration.get("action_items") or [])[:12],
+        "tools_used": (iteration.get("tools_used") or [])[:12],
+        "steps": (iteration.get("steps") or [])[:16],
+        "rows_preview": (iteration.get("result_rows") or [])[:12],
+        "chart_count": len(iteration.get("chart_specs") or []),
+        "loop_rounds": [
+            {
+                "round": round_payload.get("round"),
+                "focus": str(round_payload.get("prompt", "") or "")[-1000:],
+                "result": {
+                    "conclusions": ((round_payload.get("result") or {}).get("conclusions") or [])[:8],
+                    "action_items": ((round_payload.get("result") or {}).get("action_items") or [])[:8],
+                    "explanation": str((round_payload.get("result") or {}).get("explanation", "") or "")[:1200],
+                    "tools_used": ((round_payload.get("result") or {}).get("tools_used") or [])[:8],
+                },
+                "rows_preview": ((round_payload.get("execution") or {}).get("rows") or [])[:6],
+                "chart_count": len((round_payload.get("execution") or {}).get("chart_specs") or []),
+                "error": str(round_payload.get("error") or (round_payload.get("execution") or {}).get("error") or "")[:500],
+            }
+            for round_payload in (iteration.get("loop_rounds") or [])[:8]
+            if isinstance(round_payload, dict)
+        ],
+        "report_title": str(iteration.get("report_title", "") or "")[:240],
+        "final_report_summary": str(iteration.get("final_report_summary", "") or "")[:1500],
+        "report_meta": {
+            "stop_reason": report_meta.get("stop_reason"),
+            "rounds_completed": report_meta.get("rounds_completed"),
+            "report_format": report_meta.get("report_format"),
+        },
+    }
+
+
+def _collect_chart_specs_from_iterations(iterations: list[dict]) -> list[dict]:
+    charts: list[dict] = []
+    for iteration in iterations:
+        if isinstance(iteration, dict):
+            charts.extend(iteration.get("chart_specs") or [])
+            for round_payload in iteration.get("loop_rounds") or []:
+                if isinstance(round_payload, dict):
+                    charts.extend((round_payload.get("execution") or {}).get("chart_specs") or [])
+    return charts
+
+
+def _build_session_summary_markdown(compact_iterations: list[dict], title: str) -> str:
+    lines = [f"# {title}", ""]
+    if not compact_iterations:
+        lines.append("No analysis history is available." if get_lang() == "en" else "当前会话暂无历史分析轮次。")
+        return "\n".join(lines)
+    for idx, item in enumerate(compact_iterations, start=1):
+        heading = item.get("report_title") or item.get("message") or f"Iteration {idx}"
+        lines.extend([f"## {idx}. {heading}", ""])
+        summary = str(item.get("final_report_summary") or "").strip()
+        if summary:
+            lines.extend([summary, ""])
+        conclusions = item.get("conclusions") or []
+        if conclusions:
+            lines.append("Key findings:" if get_lang() == "en" else "关键发现：")
+            for conclusion in conclusions[:6]:
+                text = conclusion.get("text", "") if isinstance(conclusion, dict) else str(conclusion)
+                if str(text).strip():
+                    lines.append(f"- {text}")
+            lines.append("")
+        actions = item.get("action_items") or []
+        if actions:
+            lines.append("Action items:" if get_lang() == "en" else "行动建议：")
+            for action in actions[:6]:
+                if str(action).strip():
+                    lines.append(f"- {action}")
+            lines.append("")
+    return "\n".join(lines).strip()
+
+
 def _is_standalone_html_document(text: str) -> bool:
     html_text = str(text or "").strip()
     if not html_text:

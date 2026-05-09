@@ -10,6 +10,12 @@
       emptyReport: "\u62a5\u544a\u5185\u5bb9\u4e3a\u7a7a",
       renderFailed: "\u62a5\u544a\u6e32\u67d3\u5931\u8d25",
       iteration: "\u8fed\u4ee3",
+      chatPlaceholder: "\u63d0\u51fa\u5c55\u793a\u4fee\u6539\u8981\u6c42...",
+      chatSend: "\u53d1\u9001",
+      chatEmpty: "\u8bf7\u8f93\u5165\u4fee\u6539\u8981\u6c42",
+      chatUpdating: "\u6b63\u5728\u4fee\u6539 HTML \u5c55\u793a...",
+      chatUpdated: "\u5df2\u66f4\u65b0 HTML \u5c55\u793a\u3002",
+      chatFailed: "\u4fee\u6539\u5931\u8d25",
     },
     en: {
       pageTitle: "Analysis Report",
@@ -21,6 +27,12 @@
       emptyReport: "Report content is empty",
       renderFailed: "Failed to render report",
       iteration: "Iteration",
+      chatPlaceholder: "Describe how to change the presentation...",
+      chatSend: "Send",
+      chatEmpty: "Please enter a revision request",
+      chatUpdating: "Updating HTML presentation...",
+      chatUpdated: "HTML presentation updated.",
+      chatFailed: "Revision failed",
     },
   };
 
@@ -158,6 +170,29 @@
     return response.json();
   }
 
+  async function sendReportChat(iterationId, message, lang) {
+    const headers = { "Content-Type": "application/json", "X-Language": lang };
+    const token = getToken();
+    if (token) headers.Authorization = `Bearer ${token}`;
+    const response = await fetch(`/api/reports/iterations/${encodeURIComponent(iterationId)}/chat`, {
+      method: "POST",
+      headers,
+      credentials: "include",
+      body: JSON.stringify({ message }),
+    });
+    if (!response.ok) {
+      let detail = `${t(lang, "chatFailed")}: ${response.status}`;
+      try {
+        const err = await response.json();
+        detail = err.detail || detail;
+      } catch (_) {
+        // ignore
+      }
+      throw new Error(detail);
+    }
+    return response.json();
+  }
+
   function syncFrameHeight(frame) {
     try {
       const doc = frame.contentDocument;
@@ -233,16 +268,22 @@
     const loading = qs("loading");
     const btnBack = qs("btnBack");
     const btnPrint = qs("btnPrint");
+    const chatInput = qs("reportChatInput");
+    const chatSend = qs("reportChatSend");
+    const chatStatus = qs("reportChatStatus");
     const iterationId = getQueryParam("iteration_id");
     const printMode = getQueryParam("print") === "1";
     const lang = getLang();
     let currentReportFormat = "report";
+    let currentHtmlDocument = "";
 
     document.documentElement.lang = lang === "en" ? "en" : "zh-CN";
     document.title = t(lang, "pageTitle");
     if (loading) loading.textContent = t(lang, "loading");
     if (btnBack) btnBack.innerHTML = '<i class="fa-solid fa-arrow-left"></i> ' + t(lang, "back");
     if (btnPrint) btnPrint.innerHTML = '<i class="fa-solid fa-file-pdf"></i> ' + t(lang, "exportPdf");
+    if (chatInput) chatInput.placeholder = t(lang, "chatPlaceholder");
+    if (chatSend) chatSend.textContent = t(lang, "chatSend");
 
     btnBack.onclick = () => {
       if (window.history.length > 1) window.history.back();
@@ -255,7 +296,14 @@
       return;
     }
 
+    const setChatStatus = (message, isError = false) => {
+      if (!chatStatus) return;
+      chatStatus.textContent = message || "";
+      chatStatus.style.color = isError ? "#dc2626" : "#475569";
+    };
+
     const renderHtmlDocument = (htmlDocument, reportFormat) => {
+      currentHtmlDocument = htmlDocument;
       frame.onload = () => {
         try {
           const doc = frame.contentDocument;
@@ -298,6 +346,46 @@
       } catch (err) {
         showError(err.message || String(err));
       }
+    }
+
+    async function submitReportChat() {
+      const message = String(chatInput?.value || "").trim();
+      if (!message) {
+        setChatStatus(t(lang, "chatEmpty"), true);
+        return;
+      }
+      if (chatSend) chatSend.disabled = true;
+      if (chatInput) chatInput.disabled = true;
+      setChatStatus(t(lang, "chatUpdating"));
+      try {
+        const data = await sendReportChat(iterationId, message, lang);
+        const htmlDocument = normalizeHtmlDocument(data.html_document || "");
+        if (!htmlDocument) {
+          throw new Error(t(lang, "emptyReport"));
+        }
+        const reportFormat = data.report_meta?.report_format || data.report_format || currentReportFormat || "ppt";
+        renderHtmlDocument(htmlDocument, reportFormat);
+        if (chatInput) chatInput.value = "";
+        setChatStatus(data.assistant_message || t(lang, "chatUpdated"));
+      } catch (err) {
+        setChatStatus(err.message || String(err), true);
+      } finally {
+        if (chatSend) chatSend.disabled = false;
+        if (chatInput) {
+          chatInput.disabled = false;
+          chatInput.focus();
+        }
+      }
+    }
+
+    if (chatSend) chatSend.onclick = submitReportChat;
+    if (chatInput) {
+      chatInput.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" && !event.shiftKey) {
+          event.preventDefault();
+          submitReportChat();
+        }
+      });
     }
 
     await loadReport();
