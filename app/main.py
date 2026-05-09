@@ -1375,6 +1375,9 @@ def _report_html_has_render_artifacts(html_document: str) -> bool:
         return True
     visible = re.sub(r"<script[\s\S]*?</script>|<style[\s\S]*?</style>", " ", raw, flags=re.IGNORECASE)
     visible = html.unescape(re.sub(r"<[^>]+>", "\n", visible))
+    visible_text = re.sub(r"\s+", " ", visible).strip()
+    if len(visible_text) < 2:
+        return True
     artifact_patterns = (
         r"\\u[0-9a-fA-F]{4}",
         r"\\n|\\t|\\r",

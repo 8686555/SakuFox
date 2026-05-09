@@ -34,6 +34,7 @@ const autoReportFormatSelect = document.getElementById("autoReportFormatSelect")
 const autoReportStyleInput = document.getElementById("autoReportStyleInput");
 const chatPlusBtn = document.getElementById("chatPlusBtn");
 const chatPlusMenu = document.getElementById("chatPlusMenu");
+const menuAutoAnalyzeBtn = document.getElementById("menuAutoAnalyzeBtn");
 const summarizeSessionHtmlBtn = document.getElementById("summarizeSessionHtmlBtn");
 
 
@@ -336,6 +337,15 @@ async function handleSummarizeSessionHtml() {
       `<div style="color:#ef4444">${escapeHtml(err.message || String(err))}</div>`
     );
   }
+}
+
+function handleMenuAutoAnalyze() {
+  setChatPlusMenuOpen(false);
+  if (activeAnalysisController) {
+    stopActiveAnalysis();
+    return;
+  }
+  handleAutoAnalyze();
 }
 
 function renderSkillContextSnapshot(snapshot) {
@@ -2801,14 +2811,6 @@ document.getElementById("sendBtn").onclick = () => {
   handleSend();
 };
 
-document.getElementById("autoAnalyzeBtn").onclick = () => {
-  if (activeAnalysisController) {
-    stopActiveAnalysis();
-    return;
-  }
-  handleAutoAnalyze();
-};
-
 if (autoReportFormatSelect) {
   autoReportFormatSelect.addEventListener("change", syncAutoReportStyleControls);
   syncAutoReportStyleControls();
@@ -2828,6 +2830,10 @@ if (chatPlusBtn && chatPlusMenu) {
 
 if (summarizeSessionHtmlBtn) {
   summarizeSessionHtmlBtn.addEventListener("click", handleSummarizeSessionHtml);
+}
+
+if (menuAutoAnalyzeBtn) {
+  menuAutoAnalyzeBtn.addEventListener("click", handleMenuAutoAnalyze);
 }
 
 

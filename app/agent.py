@@ -1337,13 +1337,16 @@ def revise_report_html_document(
     fallback_markdown = str(iteration.get("final_report_md", "") or summary or title)
     chart_specs = _collect_chart_specs_from_iterations([iteration])
     current_html_text = str(current_html or iteration.get("final_report_html", "") or "").strip()
+    fallback_html = _build_polished_fallback_report_html(fallback_markdown, title=title)
+    if _is_visibly_empty_html_document(current_html_text):
+        current_html_text = fallback_html
 
     if selected_provider not in {"openai", "anthropic"}:
         return {
             "title": title,
             "summary": summary,
             "assistant_message": "HTML kept unchanged." if lang_code == "en" else "已保留当前 HTML，可切换真实模型后继续修改。",
-            "html_document": current_html_text or _build_polished_fallback_report_html(fallback_markdown, title=title),
+            "html_document": current_html_text or fallback_html,
             "chart_bindings": [],
         }
 
@@ -1377,11 +1380,13 @@ def revise_report_html_document(
     fallback_bundle = {
         "title": title,
         "summary": summary,
-        "html_document": current_html_text or _build_polished_fallback_report_html(fallback_markdown, title=title),
+        "html_document": current_html_text or fallback_html,
         "chart_bindings": [],
         "legacy_markdown": fallback_markdown,
     }
     normalized = _normalize_report_bundle(parsed, fallback_bundle, chart_specs)
+    if _is_visibly_empty_html_document(normalized.get("html_document", "")):
+        normalized["html_document"] = fallback_html
     normalized["title"] = str(normalized.get("title", "") or title)
     normalized["summary"] = str(normalized.get("summary", "") or summary)
     normalized["assistant_message"] = str(
@@ -1451,6 +1456,8 @@ def summarize_session_history_as_html(
         "legacy_markdown": fallback_markdown,
     }
     normalized = _normalize_report_bundle(parsed, fallback_bundle, chart_specs)
+    if _is_visibly_empty_html_document(normalized.get("html_document", "")):
+        normalized["html_document"] = fallback_html
     normalized["title"] = str(normalized.get("title", "") or title)
     normalized["summary"] = str(normalized.get("summary", "") or fallback_bundle["summary"])
     normalized["assistant_message"] = str(
@@ -1558,7 +1565,19 @@ def _is_viable_report_html_document(text: str) -> bool:
         return False
     if _report_html_has_render_artifacts(html_text):
         return False
+    if _is_visibly_empty_html_document(html_text):
+        return False
     return True
+
+
+def _is_visibly_empty_html_document(text: str) -> bool:
+    html_text = str(text or "").strip()
+    if not html_text:
+        return True
+    visible = re.sub(r"<script[\s\S]*?</script>|<style[\s\S]*?</style>", " ", html_text, flags=re.IGNORECASE)
+    visible = html.unescape(re.sub(r"<[^>]+>", "\n", visible))
+    visible_text = re.sub(r"\s+", " ", visible).strip()
+    return len(visible_text) < 2
 
 
 def _is_polished_html_document(text: str) -> bool:

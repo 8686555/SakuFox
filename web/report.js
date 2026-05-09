@@ -139,6 +139,16 @@
       .replaceAll(">", "&gt;");
   }
 
+  function appendReportChatMessage(container, role, text, isError = false) {
+    if (!container) return;
+    const item = document.createElement("div");
+    item.className = `report-chat-message ${role || "assistant"}${isError ? " error" : ""}`;
+    item.textContent = String(text || "");
+    container.appendChild(item);
+    container.classList.add("has-messages");
+    container.scrollTop = container.scrollHeight;
+  }
+
   function normalizeHtmlDocument(rawText) {
     const text = String(rawText || "").trim();
     if (!text) return "";
@@ -271,6 +281,7 @@
     const chatInput = qs("reportChatInput");
     const chatSend = qs("reportChatSend");
     const chatStatus = qs("reportChatStatus");
+    const chatMessages = qs("reportChatMessages");
     const iterationId = getQueryParam("iteration_id");
     const printMode = getQueryParam("print") === "1";
     const lang = getLang();
@@ -354,6 +365,7 @@
         setChatStatus(t(lang, "chatEmpty"), true);
         return;
       }
+      appendReportChatMessage(chatMessages, "user", message);
       if (chatSend) chatSend.disabled = true;
       if (chatInput) chatInput.disabled = true;
       setChatStatus(t(lang, "chatUpdating"));
@@ -366,9 +378,13 @@
         const reportFormat = data.report_meta?.report_format || data.report_format || currentReportFormat || "ppt";
         renderHtmlDocument(htmlDocument, reportFormat);
         if (chatInput) chatInput.value = "";
-        setChatStatus(data.assistant_message || t(lang, "chatUpdated"));
+        const reply = data.assistant_message || t(lang, "chatUpdated");
+        appendReportChatMessage(chatMessages, "assistant", reply);
+        setChatStatus(t(lang, "chatUpdated"));
       } catch (err) {
-        setChatStatus(err.message || String(err), true);
+        const errorText = err.message || String(err);
+        appendReportChatMessage(chatMessages, "assistant", errorText, true);
+        setChatStatus(errorText, true);
       } finally {
         if (chatSend) chatSend.disabled = false;
         if (chatInput) {
