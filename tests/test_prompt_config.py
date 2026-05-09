@@ -32,3 +32,19 @@ def test_prompt_keys_match_between_config_and_example():
         assert example_config.PROMPTS[key]["zh"].strip()
         assert example_config.PROMPTS[key]["en"].strip()
 
+
+def test_config_fields_match_between_config_and_example():
+    config_path = Path(__file__).resolve().parents[1] / "app" / "config.py"
+    if not config_path.exists():
+        pytest.skip("local app/config.py is not present")
+
+    from app import config
+
+    example_config = _load_example_config()
+
+    assert set(config.AppConfig.__dataclass_fields__) == set(example_config.AppConfig.__dataclass_fields__)
+    for name in ("ENABLE_AUTH_SYSTEM", "ENABLE_KNOWLEDGE_SYSTEM"):
+        assert hasattr(config, name)
+        assert hasattr(example_config, name)
+        assert getattr(config, name) is False
+        assert getattr(example_config, name) is False

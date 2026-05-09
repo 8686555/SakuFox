@@ -1,9 +1,15 @@
 from fastapi.testclient import TestClient
+import pytest
 
 from app.main import app
 
 
 client = TestClient(app)
+
+
+@pytest.fixture(autouse=True)
+def _enable_auth_system(monkeypatch):
+    monkeypatch.setenv("ENABLE_AUTH_SYSTEM", "true")
 
 
 def _login_admin() -> dict[str, str]:

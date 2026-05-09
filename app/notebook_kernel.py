@@ -12,6 +12,7 @@ from typing import Callable
 import pandas as pd
 
 from app.i18n import t
+from app.config import load_config
 from app.python_sandbox import run_python_pipeline
 from app.store import store
 from app.sql_guard import enforce_select_only, enforce_table_whitelist
@@ -280,6 +281,27 @@ class NotebookKernel:
                 raise RuntimeError(f"knowledge asset not accessible in sandbox: {asset_id}")
             return store.read_knowledge_asset(asset_id=str(asset_id), mode=mode, cursor=cursor, limit=limit)
 
+        extra_globals = {
+            "execute_select_sql": execute_select_sql_helper,
+            "execute_select_df": execute_select_df_helper,
+            "publish_df": publish_df_helper,
+            "list_temp_tables": list_temp_tables_helper,
+            "describe_table": describe_table_helper,
+            "last_sql_rows": self.shared_namespace.get("last_sql_rows", []),
+            "last_sql_df": self.shared_namespace.get("last_sql_df", pd.DataFrame()),
+            "df": self.shared_namespace.get("df", pd.DataFrame()),
+        }
+        if load_config().enable_knowledge_system:
+            extra_globals.update(
+                {
+                    "query_knowledge_index": query_knowledge_index_helper,
+                    "query_semantic_layer": query_semantic_layer_helper,
+                    "query_experience_index": query_experience_index_helper,
+                    "query_document_sources": query_document_sources_helper,
+                    "read_knowledge_asset": read_knowledge_asset_helper,
+                }
+            )
+
         result = run_python_pipeline(
             python_code=code,
             shared_namespace=self.shared_namespace,
@@ -287,21 +309,7 @@ class NotebookKernel:
             upload_paths=upload_paths,
             sql_tool=lambda sql: execute_select_sql_helper(sql, source="main"),
             step_results=step_results,
-            extra_globals={
-                "execute_select_sql": execute_select_sql_helper,
-                "execute_select_df": execute_select_df_helper,
-                "publish_df": publish_df_helper,
-                "list_temp_tables": list_temp_tables_helper,
-                "describe_table": describe_table_helper,
-                "query_knowledge_index": query_knowledge_index_helper,
-                "query_semantic_layer": query_semantic_layer_helper,
-                "query_experience_index": query_experience_index_helper,
-                "query_document_sources": query_document_sources_helper,
-                "read_knowledge_asset": read_knowledge_asset_helper,
-                "last_sql_rows": self.shared_namespace.get("last_sql_rows", []),
-                "last_sql_df": self.shared_namespace.get("last_sql_df", pd.DataFrame()),
-                "df": self.shared_namespace.get("df", pd.DataFrame()),
-            },
+            extra_globals=extra_globals,
         )
         final_rows = result.get("rows", [])
         self.shared_namespace[f"df{self.cell_index}"] = pd.DataFrame(final_rows)

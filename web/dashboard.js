@@ -182,6 +182,7 @@ function normalizeStaticText() {
   if (navAnalysis) navAnalysis.textContent = i18n.t("nav_analysis") || "数据分析";
   if (navSqlToolbox) navSqlToolbox.textContent = i18n.t("nav_sql_toolbox") || "SQL 工具箱";
   if (navKnowledge) navKnowledge.textContent = i18n.t("nav_knowledge") || "知识库配置";
+  if (typeof applyFeatureVisibility === "function") applyFeatureVisibility();
 }
 
 function getWorkspaceTabFromUrl() {
@@ -382,6 +383,8 @@ async function refreshProfile(selectId = null) {
   try {
 
     const me = await api("/api/me");
+
+    if (typeof setAppFeatures === "function") setAppFeatures(me.features || {});
 
     userInfo.textContent = `${me.user.display_name} (${me.user.groups.join(", ")})`;
 

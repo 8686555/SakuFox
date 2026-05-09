@@ -251,6 +251,30 @@ function applyEmbeddedPageMode() {
 
 applyEmbeddedPageMode();
 
+window.APP_FEATURES = window.APP_FEATURES || {
+  auth_system: true,
+  knowledge_system: true
+};
+
+function applyFeatureVisibility() {
+  const knowledgeEnabled = window.APP_FEATURES.knowledge_system !== false;
+  document.querySelectorAll('[data-workspace-tab="knowledge"], a[href*="knowledge.html"], a[href*="knowledge-index"], a[href="/knowledge-index"]').forEach((el) => {
+    el.style.display = knowledgeEnabled ? "" : "none";
+  });
+  if (!knowledgeEnabled && typeof setWorkspaceTab === "function") {
+    const current = new URL(window.location.href).searchParams.get("workspace_tab");
+    if (current === "knowledge") setWorkspaceTab("analysis");
+  }
+}
+
+function setAppFeatures(features = {}) {
+  window.APP_FEATURES = {
+    ...window.APP_FEATURES,
+    ...(features || {})
+  };
+  applyFeatureVisibility();
+}
+
 async function api(path, options = {}) {
   const headers = {
     "Content-Type": "application/json",
@@ -265,7 +289,7 @@ async function api(path, options = {}) {
   const res = await fetch(API_BASE + path, { ...options, headers, credentials: "include" });
 
   if (!res.ok) {
-    if (res.status === 401 && !window.location.pathname.endsWith("/login.html")) {
+    if (res.status === 401 && window.APP_FEATURES.auth_system !== false && !window.location.pathname.endsWith("/login.html")) {
       window.location.href = "/web/login.html";
       return Promise.reject(new Error("Not authenticated"));
     }

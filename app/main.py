@@ -78,6 +78,21 @@ app.mount("/web", StaticFiles(directory=str(web_dir)), name="web")
 async def i18n_middleware(request: Request, call_next):
     lang = request.headers.get("X-Language", "zh")
     set_lang(lang)
+    cfg = load_config()
+    if not cfg.enable_knowledge_system:
+        path = request.url.path
+        knowledge_disabled = (
+            path == "/knowledge-index"
+            or path in {"/web/knowledge.html", "/web/knowledge_index.html"}
+            or path.startswith("/api/knowledge")
+            or bool(re.fullmatch(r"/api/sandboxes/[^/]+/knowledge_bases", path))
+        )
+        if knowledge_disabled:
+            return Response(
+                content=json.dumps({"detail": "Knowledge system is disabled"}, ensure_ascii=False),
+                status_code=404,
+                media_type="application/json",
+            )
     response = await call_next(request)
     return response
 
@@ -99,6 +114,8 @@ def sql_toolbox_page() -> FileResponse:
 
 @app.get("/knowledge-index")
 def knowledge_index_page() -> FileResponse:
+    if not load_config().enable_knowledge_system:
+        raise HTTPException(status_code=404, detail="Knowledge system is disabled")
     return FileResponse(str(web_dir / "knowledge_index.html"))
 
 
@@ -190,6 +207,12 @@ def _collect_business_knowledge(
     session_patches: list[str] | None = None,
 ) -> list[str]:
     knowledge_items: list[str] = []
+    if not load_config().enable_knowledge_system:
+        for patch in session_patches or []:
+            text = str(patch).strip()
+            if text:
+                knowledge_items.append(f"[Session Patch]: {text}")
+        return _dedupe_keep_order(knowledge_items)
 
     indexed_hits = store.search_knowledge_index(query=message, sandbox_id=sandbox_id, top_k=6)
     for hit in indexed_hits:
@@ -1704,6 +1727,8 @@ def _build_auto_iteration_payload(
 
 @app.post("/api/auth/login")
 def login(req: LoginRequest, response: Response):
+    if not load_config().enable_auth_system:
+        raise HTTPException(status_code=404, detail="Authentication system is disabled")
     if req.provider == "ldap":
         token, user = login_with_ldap(req.username, req.password)
     else:
@@ -1726,11 +1751,15 @@ def auth_providers():
 
 @app.get("/api/auth/oauth/{provider_name}/login")
 def oauth_login(provider_name: str, request: Request):
+    if not load_config().enable_auth_system:
+        raise HTTPException(status_code=404, detail="Authentication system is disabled")
     return RedirectResponse(auth_manager.start_oauth_login(provider_name, request))
 
 
 @app.get("/api/auth/oauth/{provider_name}/callback")
 def oauth_callback(provider_name: str, code: str | None = None, state: str | None = None):
+    if not load_config().enable_auth_system:
+        raise HTTPException(status_code=404, detail="Authentication system is disabled")
     token, _user = auth_manager.complete_oauth_callback(provider_name, code, state)
     response = RedirectResponse("/dashboard")
     cfg = load_config()
@@ -1755,7 +1784,14 @@ def logout(request: Request, response: Response, authorization: str | None = Hea
 
 @app.get("/api/me")
 def me(user: User = Depends(get_current_user)):
-    return {"user": user.__dict__}
+    cfg = load_config()
+    return {
+        "user": user.__dict__,
+        "features": {
+            "auth_system": cfg.enable_auth_system,
+            "knowledge_system": cfg.enable_knowledge_system,
+        },
+    }
 
 
 @app.get("/api/tables")
@@ -1834,7 +1870,11 @@ def iterate(req: IterateRequest, user: User = Depends(get_current_user)):
     
     # Merge sandbox knowledge sources into a single context payload.
     business_knowledge = _collect_business_knowledge(sandbox, req.sandbox_id, message, list(session.get("patches", [])))
-    knowledge_sources = store.search_knowledge_index(query=message, sandbox_id=req.sandbox_id, top_k=3)
+    knowledge_sources = (
+        store.search_knowledge_index(query=message, sandbox_id=req.sandbox_id, top_k=3)
+        if config.enable_knowledge_system
+        else []
+    )
 
     def stream_generator():
         try:
@@ -2040,7 +2080,11 @@ def auto_analyze(req: AutoAnalyzeRequest, user: User = Depends(get_current_user)
         message = _build_default_auto_seed_message(selected_tables, selected_files)
 
     business_knowledge = _collect_business_knowledge(sandbox, req.sandbox_id, message, list(session.get("patches", [])))
-    knowledge_sources = store.search_knowledge_index(query=message, sandbox_id=req.sandbox_id, top_k=3)
+    knowledge_sources = (
+        store.search_knowledge_index(query=message, sandbox_id=req.sandbox_id, top_k=3)
+        if config.enable_knowledge_system
+        else []
+    )
 
     def stream_generator():
         try:

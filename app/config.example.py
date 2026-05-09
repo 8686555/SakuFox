@@ -23,6 +23,8 @@ ANALYSIS_MAX_ROUNDS_LIMIT = 100
 DOCUMENT_PARSER = "mineru_local"
 MINERU_COMMAND = "mineru"
 DOCUMENT_PARSE_TIMEOUT_SECONDS = 120
+ENABLE_AUTH_SYSTEM = False
+ENABLE_KNOWLEDGE_SYSTEM = False
 
 # --- Database Configuration ---
 DEFAULT_DB_TYPE = "sqlite"
@@ -104,11 +106,6 @@ PROMPTS = {
             "- step_results: List of all previous step results\n"
             "- pd / pandas, np / numpy, json, math, re, datetime, date, timedelta, Counter, defaultdict\n"
             "- execute_select_sql(sql): Execute SQL in sandbox, returns list[dict]\n"
-            "- query_knowledge_index(query, top_k=5): Search mounted knowledge assets and return matched snippets with asset ids\n"
-            "- query_semantic_layer(query, top_k=5): Search published Text2SQL semantic layer pages (metrics, fields, joins, filters)\n"
-            "- query_experience_index(query, top_k=5): Search published reusable analysis experiences\n"
-            "- query_document_sources(query, top_k=5): Search parsed uploaded document chunks as traceable source evidence\n"
-            "- read_knowledge_asset(asset_id, mode='preview'): Read the full or partial content of a matched knowledge asset\n"
             "- uploaded_dataframes: Dict of uploaded files (name -> DataFrame)\n"
             "- uploaded_file_paths: Dict of physical paths (name -> path)\n"
             "- final_df: MUST be assigned; final output DataFrame\n"
@@ -173,11 +170,6 @@ PROMPTS = {
             "- datetime / date / timedelta: 日期类\n"
             "- Counter / defaultdict: collections 常用类\n"
             "- execute_select_sql(sql): 沙盒内执行 SQL，返回 list[dict]\n"
-            "- query_knowledge_index(query, top_k=5): 搜索当前工作空间已挂载的知识资产，返回命中的片段与 asset_id\n"
-            "- query_semantic_layer(query, top_k=5): 搜索已发布的 Text2SQL 语义层（指标、字段、关联、过滤规则）\n"
-            "- query_experience_index(query, top_k=5): 搜索已发布的可复用分析经验\n"
-            "- query_document_sources(query, top_k=5): 搜索已解析上传文档片段，作为可追溯来源证据\n"
-            "- read_knowledge_asset(asset_id, mode='preview'): 读取命中知识资产的完整或分页内容\n"
             "- safe_first_row(df): 安全返回首行字典，空表时返回 None\n"
             "- safe_get_value(df, col, default=None): 安全获取某列某行的值，缺列或越界时返回默认值\n"
             "- safe_has_columns(df, *cols): 检查 DataFrame 是否同时包含多个列\n"
@@ -220,6 +212,26 @@ PROMPTS = {
             "- 业务优先：用户补充的业务知识优先级最高，分析必须贴合实际场景\n"
             "- 结论可溯源：每个结论都能追溯到对应的原始数据和计算逻辑\n"
             "- 置信度标注：每个结论标注可信程度，数据不充分时主动提示\n"
+        ),
+    },
+    "iteration_knowledge_tools": {
+        "en": (
+            "\n[OPTIONAL KNOWLEDGE TOOLS]\n"
+            "The following helpers are available only when the knowledge system is enabled:\n"
+            "- query_knowledge_index(query, top_k=5): Search mounted knowledge assets and return matched snippets with asset ids\n"
+            "- query_semantic_layer(query, top_k=5): Search published Text2SQL semantic layer pages (metrics, fields, joins, filters)\n"
+            "- query_experience_index(query, top_k=5): Search published reusable analysis experiences\n"
+            "- query_document_sources(query, top_k=5): Search parsed uploaded document chunks as traceable source evidence\n"
+            "- read_knowledge_asset(asset_id, mode='preview'): Read the full or partial content of a matched knowledge asset\n"
+        ),
+        "zh": (
+            "\n【可选知识工具】\n"
+            "仅当知识库系统启用时，以下辅助函数才可用：\n"
+            "- query_knowledge_index(query, top_k=5): 搜索当前工作空间已挂载的知识资产，返回命中的片段与 asset_id\n"
+            "- query_semantic_layer(query, top_k=5): 搜索已发布的 Text2SQL 语义层（指标、字段、关联、过滤规则）\n"
+            "- query_experience_index(query, top_k=5): 搜索已发布的可复用分析经验\n"
+            "- query_document_sources(query, top_k=5): 搜索已解析上传文档片段，作为可追溯来源证据\n"
+            "- read_knowledge_asset(asset_id, mode='preview'): 读取命中知识资产的完整或分页内容\n"
         ),
     },
     "iteration_user_constraints": {
@@ -823,6 +835,14 @@ def format_prompt(
     return get_prompt(prompts, key, lang=lang).format(**values)
 
 
+def _compose_iteration_system_prompt(prompts: dict[str, dict[str, str]], enable_knowledge_system: bool) -> str:
+    base = get_prompt(prompts, "iteration_system")
+    if not enable_knowledge_system:
+        return base
+    knowledge_tools = get_prompt(prompts, "iteration_knowledge_tools")
+    return f"{base.rstrip()}\n{knowledge_tools.strip()}"
+
+
 @dataclass(frozen=True)
 class AppConfig:
     llm_provider: str
@@ -839,6 +859,8 @@ class AppConfig:
     iterate_max_rounds: int
     auto_analyze_max_rounds: int
     analysis_max_rounds_limit: int
+    enable_auth_system: bool
+    enable_knowledge_system: bool
     prompts: dict[str, dict[str, str]]
     iteration_system_prompt: str
     insight_prompt_metrics: str
@@ -897,6 +919,18 @@ def _pick_json(default_value, *values: str):
 def load_config() -> AppConfig:
     dotenv = _read_dotenv()
     prompts = _resolve_prompts(dotenv)
+    enable_auth_system = _pick_bool(
+        os.getenv("ENABLE_AUTH_SYSTEM", ""),
+        dotenv.get("ENABLE_AUTH_SYSTEM", ""),
+        str(ENABLE_AUTH_SYSTEM),
+        default=ENABLE_AUTH_SYSTEM,
+    )
+    enable_knowledge_system = _pick_bool(
+        os.getenv("ENABLE_KNOWLEDGE_SYSTEM", ""),
+        dotenv.get("ENABLE_KNOWLEDGE_SYSTEM", ""),
+        str(ENABLE_KNOWLEDGE_SYSTEM),
+        default=ENABLE_KNOWLEDGE_SYSTEM,
+    )
     max_selected_tables_raw = _pick(str(MAX_SELECTED_TABLES), os.getenv("MAX_SELECTED_TABLES", ""), dotenv.get("MAX_SELECTED_TABLES", ""), default="5")
     try:
         max_selected_tables = max(1, int(max_selected_tables_raw))
@@ -950,8 +984,10 @@ def load_config() -> AppConfig:
         iterate_max_rounds=iterate_max_rounds,
         auto_analyze_max_rounds=auto_analyze_max_rounds,
         analysis_max_rounds_limit=analysis_max_rounds_limit,
+        enable_auth_system=enable_auth_system,
+        enable_knowledge_system=enable_knowledge_system,
         prompts=prompts,
-        iteration_system_prompt=get_prompt(prompts, "iteration_system"),
+        iteration_system_prompt=_compose_iteration_system_prompt(prompts, enable_knowledge_system),
         insight_prompt_metrics=get_prompt(prompts, "insight_metrics_system"),
         insight_prompt_anomaly=get_prompt(prompts, "insight_anomaly_system"),
         insight_prompt_actions=get_prompt(prompts, "insight_actions_system"),

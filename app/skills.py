@@ -286,7 +286,8 @@ def save_skill_from_proposal(
 def list_skills(user: User) -> list[dict]:
     output = []
     for skill_id, item in store.skills.items():
-        if item["owner_id"] == user.user_id or set(item["groups"]).intersection(user.groups):
+        groups = item.get("groups") or []
+        if item.get("owner_id") == user.user_id or set(groups).intersection(user.groups):
             output.append({"skill_id": skill_id, **item})
     output.sort(key=lambda x: x.get("created_at") or "", reverse=True)
     return output

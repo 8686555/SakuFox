@@ -22,6 +22,14 @@ class AuthManager:
 
     def providers(self) -> dict:
         self.refresh_config()
+        if not self.config.enable_auth_system:
+            return {
+                "auth_type": "disabled",
+                "ldap": False,
+                "oauth": [],
+                "mock": False,
+                "enabled": False,
+            }
         auth_type = self.config.auth_type
         oauth_providers = self.config.oauth_providers or {}
         return {
@@ -32,6 +40,7 @@ class AuthManager:
                 for name, provider in oauth_providers.items()
             ],
             "mock": auth_type == "mock",
+            "enabled": True,
         }
 
     def issue_login(self, user: User) -> tuple[str, User]:
@@ -121,11 +130,29 @@ class AuthManager:
         return self.issue_login(self._oauth_user_from_access_token(provider_name, provider, access_token, token_data=token_data))
 
     def get_current_user(self, request: Request, authorization: str | None = None) -> User:
+        self.refresh_config()
+        if not self.config.enable_auth_system:
+            return self.anonymous_user()
         token = self._extract_token(request, authorization)
         user = store.get_user_by_token(token) if token else None
         if not user:
             raise HTTPException(status_code=401, detail="Not authenticated")
         return user
+
+    def anonymous_user(self) -> User:
+        permissions = store.get_role_permissions(["Admin"])
+        if not permissions:
+            permissions = [{"action": "*", "resource_type": "*", "resource_id": "*"}]
+        return User(
+            user_id="u_anonymous",
+            username="anonymous",
+            display_name="匿名用户",
+            groups=["admin", "finance", "marketing", "data"],
+            provider="anonymous",
+            email="",
+            roles=["Admin"],
+            permissions=permissions,
+        )
 
     def logout(self, request: Request, authorization: str | None = None) -> bool:
         token = self._extract_token(request, authorization)
