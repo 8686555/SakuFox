@@ -2416,7 +2416,9 @@ def chat_with_iteration_report(iteration_id: str, req: ReportChatRequest, user: 
         provider=req.provider,
         model=req.model,
     )
-    report_bundle = _normalize_auto_report_bundle(report_bundle, iteration.get("chart_specs") or [])
+    html_document = str(report_bundle.get("html_document", "") or "").strip()
+    if not html_document:
+        raise HTTPException(status_code=502, detail="AI did not return a complete HTML document")
 
     previous_meta = iteration.get("report_meta") or {}
     revision_history = list(previous_meta.get("report_chat_history") or [])
@@ -2437,8 +2439,8 @@ def chat_with_iteration_report(iteration_id: str, req: ReportChatRequest, user: 
     revision_history = revision_history[-40:]
 
     store.update_iteration(user.user_id, iteration_id, {
-        "final_report_html": report_bundle.get("html_document", ""),
-        "final_report_md": report_bundle.get("legacy_markdown", iteration.get("final_report_md", "")),
+        "final_report_html": html_document,
+        "final_report_md": iteration.get("final_report_md", ""),
         "final_report_summary": report_bundle.get("summary", ""),
         "final_report_chart_bindings": report_bundle.get("chart_bindings", []),
         "report_title": report_bundle.get("title", ""),
@@ -2456,7 +2458,7 @@ def chat_with_iteration_report(iteration_id: str, req: ReportChatRequest, user: 
         "title": report_bundle.get("title", ""),
         "summary": report_bundle.get("summary", ""),
         "assistant_message": report_bundle.get("assistant_message", ""),
-        "html_document": report_bundle.get("html_document", ""),
+        "html_document": html_document,
         "chart_bindings": report_bundle.get("chart_bindings", []),
         "report_meta": {
             **previous_meta,
@@ -2499,15 +2501,14 @@ def summarize_chat_session_as_html(req: SessionHtmlSummaryRequest, user: User = 
         provider=req.provider,
         model=req.model,
     )
-    chart_specs: list[dict] = []
-    for iteration in history:
-        chart_specs.extend(iteration.get("chart_specs") or [])
-    report_bundle = _normalize_auto_report_bundle(report_bundle, chart_specs)
+    html_document = str(report_bundle.get("html_document", "") or "").strip()
+    if not html_document:
+        raise HTTPException(status_code=502, detail="AI did not return a complete HTML document")
     iteration_payload = _build_session_summary_iteration_payload(
         session_id=session_id,
         session=session,
         history=history,
-        report_bundle=report_bundle,
+        report_bundle={**report_bundle, "html_document": html_document, "legacy_markdown": ""},
     )
     iteration_id = store.append_iteration(user.user_id, session_id, iteration_payload)
     report_url = _build_iteration_report_url(iteration_id)
@@ -2519,7 +2520,7 @@ def summarize_chat_session_as_html(req: SessionHtmlSummaryRequest, user: User = 
         "title": report_bundle.get("title", ""),
         "summary": report_bundle.get("summary", ""),
         "assistant_message": report_bundle.get("assistant_message", ""),
-        "html_document": report_bundle.get("html_document", ""),
+        "html_document": html_document,
         "chart_bindings": report_bundle.get("chart_bindings", []),
     }
 

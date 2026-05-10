@@ -223,7 +223,7 @@ def test_session_html_summary_uses_current_session_history(monkeypatch):
     assert "session html" in report.json()["final_report_html"]
 
 
-def test_session_html_summary_replaces_blank_black_html(monkeypatch):
+def test_session_html_summary_rejects_missing_complete_html(monkeypatch):
     headers = _login_admin()
     _, session_id, _ = _run_mock_iteration(headers, message="blank summary source")
 
@@ -232,9 +232,8 @@ def test_session_html_summary_replaces_blank_black_html(monkeypatch):
             "title": "Blank HTML",
             "summary": "blank summary",
             "assistant_message": "bad html",
-            "html_document": "<!doctype html><html><head><style>body{background:#111827}</style></head><body></body></html>",
+            "html_document": "",
             "chart_bindings": [],
-            "legacy_markdown": "# Visible fallback\n\n- should be readable",
         }
 
     monkeypatch.setattr(main_module, "summarize_session_history_as_html", fake_summarize_session_history_as_html)
@@ -245,8 +244,42 @@ def test_session_html_summary_replaces_blank_black_html(monkeypatch):
         json={"session_id": session_id},
     )
 
+    assert res.status_code == 502
+    assert "complete HTML document" in res.json()["detail"]
+
+
+def test_report_chat_rejects_missing_complete_html(monkeypatch):
+    headers = _login_admin()
+    res = client.post(
+        "/api/chat/auto-analyze",
+        headers=headers,
+        json={
+            "sandbox_id": "sb_flights_overview",
+            "message": "auto analyze then bad revise",
+            "provider": "mock",
+        },
+    )
     assert res.status_code == 200
-    html_doc = res.json()["html_document"]
-    assert "Visible fallback" in html_doc
-    assert "<body></body>" not in html_doc
+    complete_event = next(event for event in _parse_ndjson_events(res.text) if event["type"] == "analysis_complete")
+    iteration_id = complete_event["data"]["iteration_id"]
+
+    def fake_revise_report_html_document(**kwargs):
+        return {
+            "title": "Broken",
+            "summary": "",
+            "assistant_message": "broken",
+            "html_document": "",
+            "chart_bindings": [],
+        }
+
+    monkeypatch.setattr(main_module, "revise_report_html_document", fake_revise_report_html_document)
+
+    chat = client.post(
+        f"/api/reports/iterations/{iteration_id}/chat",
+        headers=headers,
+        json={"message": "改一下"},
+    )
+
+    assert chat.status_code == 502
+    assert "complete HTML document" in chat.json()["detail"]
 

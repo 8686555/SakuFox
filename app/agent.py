@@ -1334,19 +1334,14 @@ def revise_report_html_document(
     selected_provider = (provider or config.llm_provider).lower()
     title = str(iteration.get("report_title", "") or ("Analysis Report" if lang_code == "en" else "分析报告"))
     summary = str(iteration.get("final_report_summary", "") or "")
-    fallback_markdown = str(iteration.get("final_report_md", "") or summary or title)
-    chart_specs = _collect_chart_specs_from_iterations([iteration])
     current_html_text = str(current_html or iteration.get("final_report_html", "") or "").strip()
-    fallback_html = _build_polished_fallback_report_html(fallback_markdown, title=title)
-    if _is_visibly_empty_html_document(current_html_text):
-        current_html_text = fallback_html
 
     if selected_provider not in {"openai", "anthropic"}:
         return {
             "title": title,
             "summary": summary,
-            "assistant_message": "HTML kept unchanged." if lang_code == "en" else "已保留当前 HTML，可切换真实模型后继续修改。",
-            "html_document": current_html_text or fallback_html,
+            "assistant_message": "HTML generation is unavailable with the current provider." if lang_code == "en" else "当前模型提供方不支持直接生成 HTML。",
+            "html_document": current_html_text,
             "chart_bindings": [],
         }
 
@@ -1373,29 +1368,22 @@ def revise_report_html_document(
     )
     raw = "".join(chunks).strip()
     parsed = _parse_report_bundle_json(raw) or {}
-    if not parsed:
-        extracted = _extract_html_document(raw)
-        if extracted:
-            parsed = {"title": title, "summary": summary, "html_document": extracted, "chart_bindings": []}
-    fallback_bundle = {
-        "title": title,
-        "summary": summary,
-        "html_document": current_html_text or fallback_html,
+    html_document = str(parsed.get("html_document", "") or "")
+    if not html_document:
+        html_document = _extract_html_document(raw)
+    if not html_document:
+        raise RuntimeError("AI did not return a complete HTML document")
+    return {
+        "title": str(parsed.get("title", "") or title),
+        "summary": str(parsed.get("summary", "") or summary),
+        "assistant_message": str(
+            parsed.get("assistant_message")
+            or parsed.get("message")
+            or ("HTML generated and replaced." if lang_code == "en" else "HTML 已生成并替换。")
+        ),
+        "html_document": html_document,
         "chart_bindings": [],
-        "legacy_markdown": fallback_markdown,
     }
-    normalized = _normalize_report_bundle(parsed, fallback_bundle, chart_specs)
-    if _is_visibly_empty_html_document(normalized.get("html_document", "")):
-        normalized["html_document"] = fallback_html
-    normalized["title"] = str(normalized.get("title", "") or title)
-    normalized["summary"] = str(normalized.get("summary", "") or summary)
-    normalized["assistant_message"] = str(
-        parsed.get("assistant_message")
-        or parsed.get("message")
-        or ("Updated the HTML report." if lang_code == "en" else "已按要求更新 HTML 展示。")
-    )
-    normalized["chart_bindings"] = []
-    return normalized
 
 
 def summarize_session_history_as_html(
@@ -1409,20 +1397,16 @@ def summarize_session_history_as_html(
     report_language = "English" if lang_code == "en" else "简体中文"
     title = "Session HTML Summary" if lang_code == "en" else "会话 HTML 总结"
     compact_iterations = [_compact_iteration_for_html(item) for item in iterations]
-    fallback_markdown = _build_session_summary_markdown(compact_iterations, title)
-    fallback_html = _build_polished_fallback_report_html(fallback_markdown, title=title)
-    chart_specs = _collect_chart_specs_from_iterations(iterations)
 
     config = load_config()
     selected_provider = (provider or config.llm_provider).lower()
     if selected_provider not in {"openai", "anthropic"}:
         return {
             "title": title,
-            "summary": f"{len(iterations)} iterations summarized." if lang_code == "en" else f"已汇总 {len(iterations)} 轮历史分析。",
-            "assistant_message": "Session history summarized as HTML." if lang_code == "en" else "已将当前会话历史总结为 HTML。",
-            "html_document": fallback_html,
+            "summary": "",
+            "assistant_message": "HTML generation is unavailable with the current provider." if lang_code == "en" else "当前模型提供方不支持直接生成 HTML。",
+            "html_document": "",
             "chart_bindings": [],
-            "legacy_markdown": fallback_markdown,
         }
 
     context = {
@@ -1444,30 +1428,22 @@ def summarize_session_history_as_html(
     )
     raw = "".join(chunks).strip()
     parsed = _parse_report_bundle_json(raw) or {}
-    if not parsed:
-        extracted = _extract_html_document(raw)
-        if extracted:
-            parsed = {"title": title, "summary": "", "html_document": extracted, "chart_bindings": []}
-    fallback_bundle = {
-        "title": title,
-        "summary": "",
-        "html_document": fallback_html,
+    html_document = str(parsed.get("html_document", "") or "")
+    if not html_document:
+        html_document = _extract_html_document(raw)
+    if not html_document:
+        raise RuntimeError("AI did not return a complete HTML document")
+    return {
+        "title": str(parsed.get("title", "") or title),
+        "summary": str(parsed.get("summary", "") or ""),
+        "assistant_message": str(
+            parsed.get("assistant_message")
+            or parsed.get("message")
+            or ("Session history summarized as HTML." if lang_code == "en" else "已将当前会话历史总结为 HTML。")
+        ),
+        "html_document": html_document,
         "chart_bindings": [],
-        "legacy_markdown": fallback_markdown,
     }
-    normalized = _normalize_report_bundle(parsed, fallback_bundle, chart_specs)
-    if _is_visibly_empty_html_document(normalized.get("html_document", "")):
-        normalized["html_document"] = fallback_html
-    normalized["title"] = str(normalized.get("title", "") or title)
-    normalized["summary"] = str(normalized.get("summary", "") or fallback_bundle["summary"])
-    normalized["assistant_message"] = str(
-        parsed.get("assistant_message")
-        or parsed.get("message")
-        or ("Session history summarized as HTML." if lang_code == "en" else "已将当前会话历史总结为 HTML。")
-    )
-    normalized["chart_bindings"] = []
-    normalized["legacy_markdown"] = str(normalized.get("legacy_markdown", "") or fallback_markdown)
-    return normalized
 
 
 def _compact_iteration_for_html(iteration: dict) -> dict:

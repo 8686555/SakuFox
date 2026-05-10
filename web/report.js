@@ -147,6 +147,7 @@
     container.appendChild(item);
     container.classList.add("has-messages");
     container.scrollTop = container.scrollHeight;
+    return item;
   }
 
   function normalizeHtmlDocument(rawText) {
@@ -348,7 +349,7 @@
     async function loadReport() {
       try {
         const data = await fetchReport(iterationId, lang);
-        const htmlDocument = normalizeHtmlDocument(data.final_report_html || "");
+        const htmlDocument = extractHtmlFromJsonLike(data.final_report_html || "") || String(data.final_report_html || "").trim();
         if (!htmlDocument) {
           showError(t(lang, "emptyReport"));
           return;
@@ -366,12 +367,13 @@
         return;
       }
       appendReportChatMessage(chatMessages, "user", message);
+      const pendingMessage = appendReportChatMessage(chatMessages, "assistant", `${t(lang, "chatUpdating")} ${lang === "en" ? "Please wait." : "请稍候。"}`);
       if (chatSend) chatSend.disabled = true;
       if (chatInput) chatInput.disabled = true;
       setChatStatus(t(lang, "chatUpdating"));
       try {
         const data = await sendReportChat(iterationId, message, lang);
-        const htmlDocument = normalizeHtmlDocument(data.html_document || "");
+        const htmlDocument = extractHtmlFromJsonLike(data.html_document || "") || String(data.html_document || "").trim();
         if (!htmlDocument) {
           throw new Error(t(lang, "emptyReport"));
         }
@@ -379,11 +381,17 @@
         renderHtmlDocument(htmlDocument, reportFormat);
         if (chatInput) chatInput.value = "";
         const reply = data.assistant_message || t(lang, "chatUpdated");
-        appendReportChatMessage(chatMessages, "assistant", reply);
+        if (pendingMessage) {
+          pendingMessage.textContent = reply;
+          pendingMessage.className = "report-chat-message assistant";
+        }
         setChatStatus(t(lang, "chatUpdated"));
       } catch (err) {
         const errorText = err.message || String(err);
-        appendReportChatMessage(chatMessages, "assistant", errorText, true);
+        if (pendingMessage) {
+          pendingMessage.textContent = errorText;
+          pendingMessage.className = "report-chat-message assistant error";
+        }
         setChatStatus(errorText, true);
       } finally {
         if (chatSend) chatSend.disabled = false;
