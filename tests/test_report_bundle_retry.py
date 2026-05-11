@@ -73,7 +73,7 @@ def test_report_bundle_accepts_standalone_ai_html_without_chart_placeholders(mon
     assert "class=\"hero\"" in str(bundle["html_document"])
 
 
-def test_report_bundle_repairs_html_fragment_before_minimal_fallback(monkeypatch):
+def test_report_bundle_retries_html_fragments_until_complete_document(monkeypatch):
     monkeypatch.setattr(
         agent_module,
         "generate_auto_analysis_report",
@@ -84,19 +84,18 @@ def test_report_bundle_repairs_html_fragment_before_minimal_fallback(monkeypatch
 
     def fake_openai(system_prompt, user_prompt, model, config):
         call_state["count"] += 1
-        if "Return valid JSON only" in user_prompt:
+        if call_state["count"] < 3:
             yield _bundle_response("<div><h1>报告片段</h1></div>")
         else:
-            assert "Structured report context" in user_prompt
-            yield _polished_html("修复后报告")
+            yield _bundle_response(_polished_html("重试后报告"))
 
     monkeypatch.setattr(agent_module, "_call_openai_protocol", fake_openai)
 
     bundle = _run_bundle_generation()
-    assert call_state["count"] == 1
+    assert call_state["count"] == 3
     html_text = str(bundle["html_document"]).lower()
     assert "<html" in html_text
-    assert "报告片段" in bundle["html_document"]
+    assert "重试后报告" in bundle["html_document"]
     assert bundle["chart_bindings"] == []
 
 
@@ -172,7 +171,7 @@ def test_report_bundle_preserves_ai_title_and_summary(monkeypatch):
     assert bundle["summary"] == "AI 自选摘要"
 
 
-def test_report_bundle_uses_polished_fallback_after_empty_html_repairs_fail(monkeypatch):
+def test_report_bundle_raises_after_three_invalid_html_attempts(monkeypatch):
     monkeypatch.setattr(
         agent_module,
         "generate_auto_analysis_report",
@@ -183,22 +182,17 @@ def test_report_bundle_uses_polished_fallback_after_empty_html_repairs_fail(monk
 
     def fake_openai(system_prompt, user_prompt, model, config):
         call_state["count"] += 1
-        if "Return valid JSON only" in user_prompt:
-            yield _bundle_response("")
-        else:
-            yield ""
+        yield _bundle_response("")
 
     monkeypatch.setattr(agent_module, "_call_openai_protocol", fake_openai)
 
-    bundle = _run_bundle_generation()
-    html_text = str(bundle["html_document"])
-
-    assert call_state["count"] == 1
-    assert "<!doctype html>" in html_text.lower()
-    assert "report-shell" in html_text
-    assert "report-hero" in html_text
-    assert "linear-gradient" in html_text
-    assert "box-shadow" in html_text
+    try:
+        _run_bundle_generation()
+    except RuntimeError as exc:
+        assert "AI failed to generate qualified HTML report after 3 attempts" in str(exc)
+    else:
+        raise AssertionError("expected RuntimeError after invalid HTML attempts")
+    assert call_state["count"] == 3
 
 
 def test_report_bundle_accepts_plain_standalone_html_without_redesign(monkeypatch):

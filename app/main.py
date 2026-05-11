@@ -35,6 +35,7 @@ from app.authorization import (
     get_accessible_tables,
     require_permission,
 )
+from app.code_normalization import normalize_llm_step_code
 from app.config import load_config, MAX_SELECTED_TABLES
 from app.db_connections import DbConnectionConfig, execute_external_sql, get_engine, test_connection, get_table_names
 from app.models import (
@@ -75,6 +76,7 @@ from app.store import User, store
 
 app = FastAPI(title=t("app_title", default="SakuFox 🦊 - 敏捷智能数据分析平台"))
 web_dir = Path(__file__).resolve().parent.parent / "web"
+report_html_dir = Path(__file__).resolve().parent.parent / "uploads" / "reports"
 app.mount("/web", StaticFiles(directory=str(web_dir)), name="web")
 
 
@@ -1008,6 +1010,79 @@ def _build_iteration_report_url(iteration_id: str) -> str:
     return f"/web/report.html?iteration_id={iteration_id}"
 
 
+def _build_iteration_report_file_url(iteration_id: str) -> str:
+    return f"/api/reports/iterations/{iteration_id}/html-file"
+
+
+def _report_html_file_path(iteration_id: str) -> Path:
+    safe_id = re.sub(r"[^A-Za-z0-9_-]", "_", str(iteration_id or ""))
+    return report_html_dir / f"{safe_id}.html"
+
+
+def _is_complete_report_html_document(html_document: str) -> bool:
+    text = str(html_document or "").strip()
+    if not re.search(r"<!doctype html[\s\S]*?</html>|<html[\s\S]*?</html>", text, flags=re.IGNORECASE):
+        return False
+    if "<body" not in text.lower():
+        return False
+    if _report_html_has_render_artifacts(text):
+        return False
+    if re.search(r"<script\b", text, flags=re.IGNORECASE):
+        return False
+    if re.search(r"<link\b[^>]*rel\s*=\s*(['\"]?)stylesheet\1", text, flags=re.IGNORECASE):
+        return False
+    if re.search(r"\son[a-z]+\s*=\s*(['\"]).*?\1", text, flags=re.IGNORECASE | re.DOTALL):
+        return False
+    if re.search(r"(href|src)\s*=\s*([\"\'])\s*javascript:", text, flags=re.IGNORECASE):
+        return False
+    return True
+
+
+def _extract_complete_report_html_document(raw_text: str) -> str:
+    text = str(raw_text or "").strip()
+    if not text:
+        return ""
+
+    candidate = ""
+    if text.startswith("{") and text.endswith("}"):
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            parsed = None
+        if isinstance(parsed, dict):
+            candidate = str(parsed.get("html_document", "") or "").strip()
+    else:
+        candidate = text
+
+    if not candidate:
+        return ""
+    match = re.search(r"<!doctype html[\s\S]*?</html>|<html[\s\S]*?</html>", candidate, flags=re.IGNORECASE)
+    candidate = (match.group(0) if match else candidate).strip()
+    return candidate if _is_complete_report_html_document(candidate) else ""
+
+
+def _write_iteration_report_html_file(iteration_id: str, html_document: str) -> str:
+    html_doc = _extract_complete_report_html_document(html_document)
+    if not html_doc:
+        raise RuntimeError("AI did not return a complete HTML document")
+    report_html_dir.mkdir(parents=True, exist_ok=True)
+    _report_html_file_path(iteration_id).write_text(html_doc, encoding="utf-8")
+    return _build_iteration_report_file_url(iteration_id)
+
+
+def _ensure_iteration_report_html_file(iteration: dict) -> str:
+    iteration_id = str(iteration.get("iteration_id") or "")
+    if not iteration_id:
+        raise HTTPException(status_code=404, detail="iteration not found")
+    path = _report_html_file_path(iteration_id)
+    if path.exists():
+        return _build_iteration_report_file_url(iteration_id)
+    try:
+        return _write_iteration_report_html_file(iteration_id, str(iteration.get("final_report_html", "") or ""))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
 def _localize_html_bundle_runtime_error(raw_message: str) -> str:
     text = str(raw_message or "")
     if text.startswith("AI failed to generate qualified HTML report after"):
@@ -1398,24 +1473,12 @@ def _report_html_has_render_artifacts(html_document: str) -> bool:
 def _normalize_auto_report_bundle(report_bundle: dict, chart_specs: list[dict]) -> dict:
     normalized = dict(report_bundle or {})
     raw_html = str(normalized.get("html_document", "") or "").strip()
-    html_document = _extract_html_document_from_report_text(raw_html)
-
-    fallback_markdown = str(normalized.get("legacy_markdown", "") or "").strip()
-    if not fallback_markdown and raw_html and "<html" not in raw_html.lower() and not raw_html.lstrip().startswith(("{", "[")):
-        fallback_markdown = raw_html
-    if not fallback_markdown:
-        fallback_markdown = str(normalized.get("summary", "") or "").strip()
-    fallback_bundle = _build_report_bundle_from_markdown(fallback_markdown, chart_specs)
-
-    if not html_document or _report_html_has_render_artifacts(html_document):
-        html_document = str(fallback_bundle.get("html_document", "") or "")
-    if "<html" not in html_document.lower() or _report_html_has_render_artifacts(html_document):
-        html_document = str(fallback_bundle.get("html_document", "") or "")
+    html_document = _extract_complete_report_html_document(raw_html)
 
     normalized["html_document"] = html_document
-    normalized["title"] = str(normalized.get("title", "") or str(fallback_bundle.get("title", "")))
-    normalized["summary"] = str(normalized.get("summary", "") or str(fallback_bundle.get("summary", "")))[:500]
-    normalized["legacy_markdown"] = str(normalized.get("legacy_markdown", "") or str(fallback_bundle.get("legacy_markdown", "")))
+    normalized["title"] = str(normalized.get("title", "") or ("Analysis Report" if get_lang() == "en" else "分析报告"))
+    normalized["summary"] = str(normalized.get("summary", "") or "")[:500]
+    normalized["legacy_markdown"] = str(normalized.get("legacy_markdown", "") or "")
     normalized["chart_bindings"] = []
     return normalized
 
@@ -2228,6 +2291,8 @@ def auto_analyze(req: AutoAnalyzeRequest, user: User = Depends(get_current_user)
                 report_bundle["legacy_markdown"] = direct_report_md
                 report_bundle["summary"] = direct_report_md[:500]
             report_bundle = _normalize_auto_report_bundle(report_bundle, chart_specs)
+            if not report_bundle.get("html_document"):
+                raise RuntimeError("AI did not return a complete HTML document")
             yield json.dumps({
                 "type": "report",
                 "data": {
@@ -2260,6 +2325,10 @@ def auto_analyze(req: AutoAnalyzeRequest, user: User = Depends(get_current_user)
 
             iteration_id = store.append_iteration(user.user_id, session_id, iteration_payload)
             report_url = _build_iteration_report_url(iteration_id)
+            report_file_url = _write_iteration_report_html_file(
+                iteration_id,
+                iteration_payload.get("final_report_html", ""),
+            )
             proposal_id = store.create_proposal({
                 "user_id": user.user_id,
                 "session_id": session_id,
@@ -2296,6 +2365,7 @@ def auto_analyze(req: AutoAnalyzeRequest, user: User = Depends(get_current_user)
                     "max_rounds_hit": iteration_payload.get("report_meta", {}).get("max_rounds_hit", False),
                     "result_count": len(_get_last_result_rows(loop_rounds)),
                     "report_url": report_url,
+                    "report_file_url": report_file_url,
                     "report_title": iteration_payload.get("report_title", ""),
                     "knowledge_sources": knowledge_sources,
                 },
@@ -2361,9 +2431,12 @@ def regenerate_report(req: RegenerateReportRequest, user: User = Depends(get_cur
     ) or {}
 
     report_bundle = _normalize_auto_report_bundle(report_bundle, chart_specs)
+    html_document = str(report_bundle.get("html_document", "") or "")
+    if not html_document:
+        raise HTTPException(status_code=502, detail="AI did not return a complete HTML document")
 
     store.update_iteration(user.user_id, req.iteration_id, {
-        "final_report_html": report_bundle.get("html_document", ""),
+        "final_report_html": html_document,
         "final_report_md": report_bundle.get("legacy_markdown", ""),
         "final_report_summary": report_bundle.get("summary", ""),
         "final_report_chart_bindings": report_bundle.get("chart_bindings", []),
@@ -2375,11 +2448,13 @@ def regenerate_report(req: RegenerateReportRequest, user: User = Depends(get_cur
             "regenerated_at": datetime.now().isoformat(),
         },
     })
+    report_file_url = _write_iteration_report_html_file(req.iteration_id, html_document)
 
     return {
         "title": report_bundle.get("title", ""),
         "summary": report_bundle.get("summary", ""),
-        "html_document": report_bundle.get("html_document", ""),
+        "html_document": html_document,
+        "report_file_url": report_file_url,
         "chart_bindings": report_bundle.get("chart_bindings", []),
         "legacy_markdown": report_bundle.get("legacy_markdown", ""),
         "conclusions": report_bundle.get("conclusions", []),
@@ -2416,7 +2491,7 @@ def chat_with_iteration_report(iteration_id: str, req: ReportChatRequest, user: 
         provider=req.provider,
         model=req.model,
     )
-    html_document = str(report_bundle.get("html_document", "") or "").strip()
+    html_document = _extract_complete_report_html_document(str(report_bundle.get("html_document", "") or ""))
     if not html_document:
         raise HTTPException(status_code=502, detail="AI did not return a complete HTML document")
 
@@ -2451,6 +2526,7 @@ def chat_with_iteration_report(iteration_id: str, req: ReportChatRequest, user: 
             "last_report_chat_at": datetime.now().isoformat(),
         },
     })
+    report_file_url = _write_iteration_report_html_file(iteration_id, html_document)
 
     return {
         "iteration_id": iteration_id,
@@ -2459,6 +2535,7 @@ def chat_with_iteration_report(iteration_id: str, req: ReportChatRequest, user: 
         "summary": report_bundle.get("summary", ""),
         "assistant_message": report_bundle.get("assistant_message", ""),
         "html_document": html_document,
+        "report_file_url": report_file_url,
         "chart_bindings": report_bundle.get("chart_bindings", []),
         "report_meta": {
             **previous_meta,
@@ -2501,7 +2578,7 @@ def summarize_chat_session_as_html(req: SessionHtmlSummaryRequest, user: User = 
         provider=req.provider,
         model=req.model,
     )
-    html_document = str(report_bundle.get("html_document", "") or "").strip()
+    html_document = _extract_complete_report_html_document(str(report_bundle.get("html_document", "") or ""))
     if not html_document:
         raise HTTPException(status_code=502, detail="AI did not return a complete HTML document")
     iteration_payload = _build_session_summary_iteration_payload(
@@ -2512,11 +2589,13 @@ def summarize_chat_session_as_html(req: SessionHtmlSummaryRequest, user: User = 
     )
     iteration_id = store.append_iteration(user.user_id, session_id, iteration_payload)
     report_url = _build_iteration_report_url(iteration_id)
+    report_file_url = _write_iteration_report_html_file(iteration_id, html_document)
 
     return {
         "iteration_id": iteration_id,
         "session_id": session_id,
         "report_url": report_url,
+        "report_file_url": report_file_url,
         "title": report_bundle.get("title", ""),
         "summary": report_bundle.get("summary", ""),
         "assistant_message": report_bundle.get("assistant_message", ""),
@@ -2553,6 +2632,21 @@ def iteration_history(session_id: str, user: User = Depends(get_current_user)):
     return {"session_id": session_id, "iterations": history, "last_proposal_id": last_proposal_id}
 
 
+@app.get("/api/reports/iterations/{iteration_id}/html-file")
+def get_iteration_report_html_file(iteration_id: str, user: User = Depends(get_current_user)):
+    iteration = store.get_iteration(user.user_id, iteration_id)
+    if not iteration:
+        raise HTTPException(status_code=404, detail="iteration not found")
+    if (iteration.get("mode") or "") != "auto_analysis":
+        raise HTTPException(status_code=400, detail="iteration is not an auto-analysis report")
+    _ensure_iteration_report_html_file(iteration)
+    return FileResponse(
+        str(_report_html_file_path(iteration_id)),
+        media_type="text/html",
+        headers={"X-Content-Type-Options": "nosniff"},
+    )
+
+
 @app.get("/api/reports/iterations/{iteration_id}")
 def get_iteration_report(iteration_id: str, user: User = Depends(get_current_user)):
     iteration = store.get_iteration(user.user_id, iteration_id)
@@ -2577,6 +2671,7 @@ def get_iteration_report(iteration_id: str, user: User = Depends(get_current_use
         "final_report_html": normalized_report.get("html_document", ""),
         "final_report_summary": normalized_report.get("summary", ""),
         "final_report_chart_bindings": normalized_report.get("chart_bindings", []),
+        "report_file_url": _build_iteration_report_file_url(iteration_id),
         "report_meta": iteration.get("report_meta", {}),
         "created_at": iteration.get("created_at"),
     }
@@ -3491,7 +3586,9 @@ def _execute_analysis_steps(
     for i, step in enumerate(steps):
         tool = str(step.get("tool", "")).strip().lower()
         source = str(step.get("source", "main") or "main").strip().lower()
-        code = str(step.get("code", "")).strip()
+        code = normalize_llm_step_code(step.get("code", ""))
+        if isinstance(step, dict):
+            step["code"] = code
         if not code:
             step_results.append(_enrich_step_result({"rows": [], "tables": [], "error": t("error_empty_code", default="空代码")}))
             continue

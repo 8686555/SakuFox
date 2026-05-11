@@ -204,6 +204,22 @@
     return response.json();
   }
 
+  async function fetchReportHtmlFile(url, lang) {
+    const headers = { "X-Language": lang };
+    const token = getToken();
+    if (token) headers.Authorization = `Bearer ${token}`;
+    const response = await fetch(url, {
+      method: "GET",
+      headers,
+      credentials: "include",
+      cache: "no-store",
+    });
+    if (!response.ok) {
+      throw new Error(`${t(lang, "loadFailed")}: ${response.status}`);
+    }
+    return response.text();
+  }
+
   function syncFrameHeight(frame) {
     try {
       const doc = frame.contentDocument;
@@ -288,6 +304,7 @@
     const lang = getLang();
     let currentReportFormat = "report";
     let currentHtmlDocument = "";
+    let currentBlobUrl = "";
 
     document.documentElement.lang = lang === "en" ? "en" : "zh-CN";
     document.title = t(lang, "pageTitle");
@@ -316,6 +333,8 @@
 
     const renderHtmlDocument = (htmlDocument, reportFormat) => {
       currentHtmlDocument = htmlDocument;
+      const previousBlobUrl = currentBlobUrl;
+      currentBlobUrl = URL.createObjectURL(new Blob([htmlDocument], { type: "text/html;charset=utf-8" }));
       frame.onload = () => {
         try {
           const doc = frame.contentDocument;
@@ -333,11 +352,13 @@
           if (printMode) {
             setTimeout(() => printFrame(frame), 300);
           }
+          if (previousBlobUrl) URL.revokeObjectURL(previousBlobUrl);
         } catch (err) {
           showError(`${t(lang, "renderFailed")}: ${err.message || err}`);
         }
       };
-      frame.srcdoc = htmlDocument;
+      frame.removeAttribute("srcdoc");
+      frame.src = currentBlobUrl;
       frame.style.display = "block";
       window.onresize = () => {
         applyPptViewportFit(frame, currentReportFormat);
@@ -349,7 +370,13 @@
     async function loadReport() {
       try {
         const data = await fetchReport(iterationId, lang);
-        const htmlDocument = extractHtmlFromJsonLike(data.final_report_html || "") || String(data.final_report_html || "").trim();
+        const reportFileUrl = data.report_file_url || `/api/reports/iterations/${encodeURIComponent(iterationId)}/html-file`;
+        let htmlDocument = "";
+        try {
+          htmlDocument = await fetchReportHtmlFile(reportFileUrl, lang);
+        } catch (_) {
+          htmlDocument = extractHtmlFromJsonLike(data.final_report_html || "") || String(data.final_report_html || "").trim();
+        }
         if (!htmlDocument) {
           showError(t(lang, "emptyReport"));
           return;
@@ -373,7 +400,13 @@
       setChatStatus(t(lang, "chatUpdating"));
       try {
         const data = await sendReportChat(iterationId, message, lang);
-        const htmlDocument = extractHtmlFromJsonLike(data.html_document || "") || String(data.html_document || "").trim();
+        const reportFileUrl = data.report_file_url || `/api/reports/iterations/${encodeURIComponent(iterationId)}/html-file`;
+        let htmlDocument = "";
+        try {
+          htmlDocument = await fetchReportHtmlFile(reportFileUrl, lang);
+        } catch (_) {
+          htmlDocument = extractHtmlFromJsonLike(data.html_document || "") || String(data.html_document || "").trim();
+        }
         if (!htmlDocument) {
           throw new Error(t(lang, "emptyReport"));
         }

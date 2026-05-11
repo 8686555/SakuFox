@@ -405,6 +405,7 @@ PROMPTS = {
     "report_bundle_user": {
         "en": (
             "Return valid JSON only. No markdown fences.\n"
+            "The server validates html_document exactly and will retry/fail instead of repairing, wrapping, or falling back from partial HTML.\n"
             "Schema:\n"
             "{{\"title\": string, \"summary\": string, \"chart_bindings\": [{{\"chart_id\": string, \"option\": object, \"height\": number}}], \"html_document\": string}}\n\n"
             "Draft report title for context, not a required final title:\n{draft_title}\n\n"
@@ -439,6 +440,7 @@ PROMPTS = {
         ),
         "zh": (
             "Return valid JSON only. 只返回合法 JSON。不要使用 markdown 代码围栏。\n"
+            "服务端会严格校验 html_document；如果不是完整 HTML 文件，将重试并最终失败，不会修复、包装或兜底。\n"
             "Schema:\n"
             "{{\"title\": string, \"summary\": string, \"chart_bindings\": [{{\"chart_id\": string, \"option\": object, \"height\": number}}], \"html_document\": string}}\n\n"
             "报告标题草稿（仅供参考，不要求作为最终标题）:\n{draft_title}\n\n"
@@ -510,6 +512,7 @@ PROMPTS = {
     "report_bundle_ppt_user": {
         "en": (
             "Return valid JSON only. No markdown fences.\n"
+            "The server validates html_document exactly and will retry/fail instead of repairing, wrapping, or falling back from partial HTML.\n"
             "Schema:\n"
             "{{\"title\": string, \"summary\": string, \"chart_bindings\": [{{\"chart_id\": string, \"option\": object, \"height\": number}}], \"html_document\": string}}\n\n"
             "Draft report title for context, not a required final title:\n{draft_title}\n\n"
@@ -546,6 +549,7 @@ PROMPTS = {
         ),
         "zh": (
             "Return valid JSON only. 只返回合法 JSON。不要使用 markdown 代码围栏。\n"
+            "服务端会严格校验 html_document；如果不是完整 HTML 文件，将重试并最终失败，不会修复、包装或兜底。\n"
             "Schema:\n"
             "{{\"title\": string, \"summary\": string, \"chart_bindings\": [{{\"chart_id\": string, \"option\": object, \"height\": number}}], \"html_document\": string}}\n\n"
             "报告标题草稿（仅供参考，不要求作为最终标题）:\n{draft_title}\n\n"
@@ -598,6 +602,7 @@ PROMPTS = {
     "report_bundle_custom_user": {
         "en": (
             "Return valid JSON only. No markdown fences.\n"
+            "The server validates html_document exactly and will retry/fail instead of repairing, wrapping, or falling back from partial HTML.\n"
             "Schema:\n"
             "{{\"title\": string, \"summary\": string, \"chart_bindings\": [{{\"chart_id\": string, \"option\": object, \"height\": number}}], \"html_document\": string}}\n\n"
             "User-requested display style:\n{display_style_instruction}\n\n"
@@ -628,6 +633,7 @@ PROMPTS = {
         ),
         "zh": (
             "Return valid JSON only. 只返回合法 JSON。不要使用 markdown 代码围栏。\n"
+            "服务端会严格校验 html_document；如果不是完整 HTML 文件，将重试并最终失败，不会修复、包装或兜底。\n"
             "Schema:\n"
             "{{\"title\": string, \"summary\": string, \"chart_bindings\": [{{\"chart_id\": string, \"option\": object, \"height\": number}}], \"html_document\": string}}\n\n"
             "用户要求的展示方式:\n{display_style_instruction}\n\n"
@@ -674,6 +680,7 @@ PROMPTS = {
             "Create a complete standalone HTML document from the completed analysis evidence.\n"
             "Requirements:\n"
             "- Return only HTML text.\n"
+            "- The server validates this output exactly and will retry/fail instead of repairing, wrapping, or falling back from partial HTML.\n"
             "- Preferred display style: {display_style_instruction}\n"
             "- Include <meta charset=\"UTF-8\"> or an equivalent UTF-8 charset declaration in <head>.\n"
             "- Use substantial, polished CSS that fit the analysis outcome; this must look like a designed analytics web report, not a plain white document.\n"
@@ -693,6 +700,7 @@ PROMPTS = {
             "请根据已完成的分析证据创建完整独立 HTML 文档。\n"
             "要求:\n"
             "- 只返回 HTML 文本。\n"
+            "- 服务端会严格校验该输出；如果不是完整 HTML 文件，将重试并最终失败，不会修复、包装或兜底。\n"
             "- 首选展示方式: {display_style_instruction}\n"
             "- <head> 中包含 <meta charset=\"UTF-8\"> 或等价的 UTF-8 charset 声明。\n"
             "- 使用充足、精致、贴合分析结果的 CSS；它必须像设计过的分析网页报告，not a plain white document。\n"
@@ -724,6 +732,7 @@ PROMPTS = {
     "report_chat_revision_user": {
         "en": (
             "Return valid JSON only. No markdown fences.\n"
+            "The server validates html_document exactly and will retry/fail instead of repairing, wrapping, or falling back from partial HTML.\n"
             "Schema:\n"
             "{{\"assistant_message\": string, \"title\": string, \"summary\": string, \"chart_bindings\": [], \"html_document\": string}}\n\n"
             "User instruction:\n{instruction}\n\n"
@@ -741,6 +750,7 @@ PROMPTS = {
         ),
         "zh": (
             "Return valid JSON only. 只返回合法 JSON。不要使用 markdown 代码围栏。\n"
+            "服务端会严格校验 html_document；如果不是完整 HTML 文件，将重试并最终失败，不会修复、包装或兜底。\n"
             "Schema:\n"
             "{{\"assistant_message\": string, \"title\": string, \"summary\": string, \"chart_bindings\": [], \"html_document\": string}}\n\n"
             "用户修改要求:\n{instruction}\n\n"
@@ -770,6 +780,7 @@ PROMPTS = {
     "session_html_summary_user": {
         "en": (
             "Return valid JSON only. No markdown fences.\n"
+            "The server validates html_document exactly and will retry/fail instead of repairing, wrapping, or falling back from partial HTML.\n"
             "Schema:\n"
             "{{\"assistant_message\": string, \"title\": string, \"summary\": string, \"chart_bindings\": [], \"html_document\": string}}\n\n"
             "Session id: {session_id}\n"
@@ -788,6 +799,7 @@ PROMPTS = {
         ),
         "zh": (
             "Return valid JSON only. 只返回合法 JSON。不要使用 markdown 代码围栏。\n"
+            "服务端会严格校验 html_document；如果不是完整 HTML 文件，将重试并最终失败，不会修复、包装或兜底。\n"
             "Schema:\n"
             "{{\"assistant_message\": string, \"title\": string, \"summary\": string, \"chart_bindings\": [], \"html_document\": string}}\n\n"
             "会话 ID: {session_id}\n"

@@ -15,6 +15,8 @@ import httpx
 
 from app.config import AppConfig, format_prompt, get_prompt, load_config
 
+from app.code_normalization import normalize_llm_step_code
+
 from app.i18n import t, get_lang
 
 
@@ -531,7 +533,7 @@ def _normalize_iteration_payload(parsed: dict, *, include_steps: bool) -> dict:
             if isinstance(step, dict) and step.get("tool") and step.get("code"):
                 tool = str(step["tool"]).strip().lower()
                 if tool in ("sql", "python"):
-                    normalized_steps.append({"tool": tool, "code": str(step["code"]).strip()})
+                    normalized_steps.append({"tool": tool, "code": normalize_llm_step_code(step["code"])})
 
     tools_used = []
     for step in normalized_steps:
@@ -1031,6 +1033,10 @@ def _resolve_report_bundle_prompt_config(
     )
 
 
+HTML_REPORT_MAX_ATTEMPTS = 3
+HTML_REPORT_FAILURE_MESSAGE = "AI failed to generate qualified HTML report after 3 attempts"
+
+
 def generate_auto_analysis_report_bundle(
     message: str,
     session_history: list[dict],
@@ -1061,7 +1067,6 @@ def generate_auto_analysis_report_bundle(
         provider=provider,
         model=model,
     )
-    fallback_bundle = _build_fallback_report_bundle(fallback_markdown, chart_specs)
 
     config = load_config()
     selected_provider = (provider or config.llm_provider).lower()
@@ -1141,9 +1146,10 @@ def generate_auto_analysis_report_bundle(
         return [str(item).strip() for item in items if str(item).strip()]
 
     if selected_provider not in {"openai", "anthropic"}:
-        fallback_bundle["conclusions"] = _extract_conclusions({"conclusions": _merge_loop_items("conclusions", unique_key="text")})
-        fallback_bundle["action_items"] = _extract_action_items({"action_items": _merge_loop_items("action_items")})
-        return fallback_bundle
+        mock_bundle = _build_mock_report_bundle(fallback_markdown, title=default_title)
+        mock_bundle["conclusions"] = _extract_conclusions({"conclusions": _merge_loop_items("conclusions", unique_key="text")})
+        mock_bundle["action_items"] = _extract_action_items({"action_items": _merge_loop_items("action_items")})
+        return mock_bundle
 
     stage1_markdown = generate_auto_analysis_report(
         message=message,
@@ -1158,7 +1164,7 @@ def generate_auto_analysis_report_bundle(
 
     stage1_title = default_title
     stage1_summary = (
-        _strip_markdown_to_plain_text(str(fallback_bundle.get("summary", "") or ""))
+        _strip_markdown_to_plain_text(str(fallback_markdown or ""))
         or _strip_markdown_to_plain_text(stage1_markdown)
     )[:500]
     stage1_bundle = {
@@ -1169,154 +1175,54 @@ def generate_auto_analysis_report_bundle(
         "legacy_markdown": stage1_markdown or fallback_markdown,
     }
     if not stage1_bundle["summary"]:
-        stage1_bundle["summary"] = str(fallback_bundle.get("summary", "") or "")
+        stage1_bundle["summary"] = _strip_markdown_to_plain_text(fallback_markdown)[:500]
     if not stage1_bundle["conclusions"]:
         stage1_bundle["conclusions"] = _extract_conclusions({"conclusions": _merge_loop_items("conclusions", unique_key="text")})
     if not stage1_bundle["action_items"]:
         stage1_bundle["action_items"] = _extract_action_items({"action_items": _merge_loop_items("action_items")})
 
     stage2_system_prompt = get_prompt(config.prompts, system_prompt_key)
-    stage2_user_prompt = format_prompt(
-        config.prompts,
-        user_prompt_key,
-        draft_title=stage1_bundle["title"],
-        draft_summary=stage1_bundle["summary"],
-        conclusions=json.dumps(stage1_bundle["conclusions"], ensure_ascii=False),
-        action_items=json.dumps(stage1_bundle["action_items"], ensure_ascii=False),
-        message=message,
-        stop_reason=stop_reason,
-        rounds_completed=rounds_completed,
-        knowledge_block=knowledge_block,
-        patches_block=patches_block,
-        history_block=history_block,
-        summary_rounds=summary_rounds,
-        iteration_materials_block=iteration_materials_block,
-        rows_preview=rows_preview,
-        report_language=report_language,
-        display_style_instruction=display_style_instruction,
-    )
-    stage2_chunks = (
-        _call_openai_protocol(system_prompt=stage2_system_prompt, user_prompt=stage2_user_prompt, model=model, config=config)
-        if selected_provider == "openai"
-        else _call_anthropic_protocol(system_prompt=stage2_system_prompt, user_prompt=stage2_user_prompt, model=model, config=config)
-    )
-    stage2_raw = "".join(stage2_chunks).strip()
-    stage2_parsed = _parse_report_bundle_json(stage2_raw)
-
-    combined_fallback = {
-        **fallback_bundle,
-        "title": stage1_bundle["title"],
-        "summary": stage1_bundle["summary"],
-        "conclusions": stage1_bundle["conclusions"],
-        "action_items": stage1_bundle["action_items"],
-        "legacy_markdown": fallback_markdown,
-    }
-    if not stage2_parsed:
-        repaired_raw = _repair_report_bundle_json(
-            raw_response=stage2_raw,
-            fallback_markdown=stage1_bundle["legacy_markdown"],
-            provider=selected_provider,
-            model=model,
-            config=config,
-            report_language=report_language,
-        )
-        stage2_parsed = _parse_report_bundle_json(repaired_raw)
-    if not stage2_parsed:
-        repaired_html = _generate_html_document_by_llm(
-            fallback_markdown=stage1_bundle["legacy_markdown"],
-            report_context={
-                "title": stage1_bundle["title"],
-                "summary": stage1_bundle["summary"],
-                "conclusions": stage1_bundle["conclusions"],
-                "action_items": stage1_bundle["action_items"],
-                "original_request": message,
-                "stop_reason": stop_reason,
-                "rounds_completed": rounds_completed,
-                "loop_rounds_summary": summary_rounds,
-                "structured_iteration_results": iteration_materials,
-                "final_result_rows_preview": final_result_rows[:20],
-                "previous_html_attempt": stage2_raw,
-            },
-            chart_specs=chart_specs,
-            provider=selected_provider,
-            model=model,
-            config=config,
+    last_error = ""
+    for _attempt in range(HTML_REPORT_MAX_ATTEMPTS):
+        stage2_user_prompt = format_prompt(
+            config.prompts,
+            user_prompt_key,
+            draft_title=stage1_bundle["title"],
+            draft_summary=stage1_bundle["summary"],
+            conclusions=json.dumps(stage1_bundle["conclusions"], ensure_ascii=False),
+            action_items=json.dumps(stage1_bundle["action_items"], ensure_ascii=False),
+            message=message,
+            stop_reason=stop_reason,
+            rounds_completed=rounds_completed,
+            knowledge_block=knowledge_block,
+            patches_block=patches_block,
+            history_block=history_block,
+            summary_rounds=summary_rounds,
+            iteration_materials_block=iteration_materials_block,
+            rows_preview=rows_preview,
             report_language=report_language,
             display_style_instruction=display_style_instruction,
         )
-        if repaired_html:
-            stage2_parsed = {
-                "title": stage1_bundle["title"],
-                "summary": stage1_bundle["summary"],
-                "html_document": repaired_html,
+        stage2_chunks = (
+            _call_openai_protocol(system_prompt=stage2_system_prompt, user_prompt=stage2_user_prompt, model=model, config=config)
+            if selected_provider == "openai"
+            else _call_anthropic_protocol(system_prompt=stage2_system_prompt, user_prompt=stage2_user_prompt, model=model, config=config)
+        )
+        stage2_raw = "".join(stage2_chunks).strip()
+        stage2_parsed = _parse_report_bundle_json_strict(stage2_raw) or {}
+        html_document, last_error = _extract_qualified_html_document(stage2_raw, parsed=stage2_parsed)
+        if html_document:
+            return {
+                "title": str(stage2_parsed.get("title", "") or stage1_bundle["title"] or default_title),
+                "summary": str(stage2_parsed.get("summary", "") or stage1_bundle["summary"]),
+                "html_document": html_document,
                 "chart_bindings": [],
+                "legacy_markdown": stage1_bundle["legacy_markdown"] or fallback_markdown,
+                "conclusions": stage1_bundle["conclusions"],
+                "action_items": stage1_bundle["action_items"],
             }
-        else:
-            return combined_fallback
 
-    raw_ai_html = str(stage2_parsed.get("html_document", "") or "").strip()
-    raw_ai_extracted_html = _extract_html_document(raw_ai_html)
-    raw_ai_html_is_candidate = (
-        bool(raw_ai_extracted_html)
-        and _is_standalone_html_document(raw_ai_extracted_html)
-        and not _looks_like_markdown_text(raw_ai_html)
-        and not _report_html_has_render_artifacts(raw_ai_extracted_html)
-    )
-    stage2_bundle = _normalize_report_bundle(stage2_parsed, combined_fallback, chart_specs)
-    stage2_bundle["title"] = str(stage2_bundle.get("title", "") or stage1_bundle["title"] or default_title)
-    stage2_bundle["summary"] = str(stage2_bundle.get("summary", "") or stage1_bundle["summary"])
-    stage2_bundle["conclusions"] = stage1_bundle["conclusions"]
-    stage2_bundle["action_items"] = stage1_bundle["action_items"]
-    stage2_bundle["legacy_markdown"] = stage1_bundle["legacy_markdown"] or fallback_markdown
-
-    is_qualified = raw_ai_html_is_candidate or _is_viable_report_html_document(stage2_bundle.get("html_document", ""))
-    if not is_qualified:
-        for _ in range(2):
-            repaired_html = _generate_html_document_by_llm(
-                fallback_markdown=stage1_bundle["legacy_markdown"],
-                report_context={
-                    "title": stage2_bundle.get("title", ""),
-                    "summary": stage2_bundle.get("summary", ""),
-                    "conclusions": stage1_bundle["conclusions"],
-                    "action_items": stage1_bundle["action_items"],
-                    "original_request": message,
-                    "stop_reason": stop_reason,
-                    "rounds_completed": rounds_completed,
-                    "loop_rounds_summary": summary_rounds,
-                    "structured_iteration_results": iteration_materials,
-                    "final_result_rows_preview": final_result_rows[:20],
-                    "previous_html_attempt": raw_ai_html,
-                },
-                chart_specs=chart_specs,
-                provider=selected_provider,
-                model=model,
-                config=config,
-                report_language=report_language,
-                display_style_instruction=display_style_instruction,
-            )
-            if not repaired_html:
-                continue
-            stage2_bundle["html_document"] = repaired_html
-            is_qualified = _is_viable_report_html_document(stage2_bundle.get("html_document", ""))
-            if is_qualified:
-                break
-
-    if not is_qualified:
-        fallback_html = _build_polished_fallback_report_html(
-            stage1_bundle["legacy_markdown"] or fallback_markdown,
-            title=stage2_bundle.get("title", "") or default_title,
-        )
-        stage2_bundle["html_document"] = fallback_html
-        is_qualified = _is_viable_report_html_document(stage2_bundle.get("html_document", ""))
-
-    if not _is_standalone_html_document(stage2_bundle.get("html_document", "")):
-        stage2_bundle["html_document"] = _wrap_html_fragment_as_document(stage2_bundle.get("html_document", ""))
-    if not _is_viable_report_html_document(stage2_bundle.get("html_document", "")):
-        stage2_bundle["html_document"] = _build_polished_fallback_report_html(
-            stage1_bundle["legacy_markdown"] or fallback_markdown,
-            title=stage2_bundle.get("title", "") or default_title,
-        )
-    return stage2_bundle
+    raise RuntimeError(f"{HTML_REPORT_FAILURE_MESSAGE}: {last_error or 'html_document is not a standalone HTML document'}")
 
 
 def revise_report_html_document(
@@ -1354,36 +1260,36 @@ def revise_report_html_document(
         "session_history": [_compact_iteration_for_html(item) for item in session_history[-10:]],
     }
     system_prompt = get_prompt(config.prompts, "report_chat_revision_system")
-    user_prompt = format_prompt(
-        config.prompts,
-        "report_chat_revision_user",
-        report_language=report_language,
-        instruction=str(instruction or "").strip(),
-        context_block=json.dumps(context, ensure_ascii=False, default=str)[:65000],
-    )
-    chunks = (
-        _call_openai_protocol(system_prompt=system_prompt, user_prompt=user_prompt, model=model, config=config)
-        if selected_provider == "openai"
-        else _call_anthropic_protocol(system_prompt=system_prompt, user_prompt=user_prompt, model=model, config=config)
-    )
-    raw = "".join(chunks).strip()
-    parsed = _parse_report_bundle_json(raw) or {}
-    html_document = str(parsed.get("html_document", "") or "")
-    if not html_document:
-        html_document = _extract_html_document(raw)
-    if not html_document:
-        raise RuntimeError("AI did not return a complete HTML document")
-    return {
-        "title": str(parsed.get("title", "") or title),
-        "summary": str(parsed.get("summary", "") or summary),
-        "assistant_message": str(
-            parsed.get("assistant_message")
-            or parsed.get("message")
-            or ("HTML generated and replaced." if lang_code == "en" else "HTML 已生成并替换。")
-        ),
-        "html_document": html_document,
-        "chart_bindings": [],
-    }
+    last_error = ""
+    for _attempt in range(HTML_REPORT_MAX_ATTEMPTS):
+        user_prompt = format_prompt(
+            config.prompts,
+            "report_chat_revision_user",
+            report_language=report_language,
+            instruction=str(instruction or "").strip(),
+            context_block=json.dumps(context, ensure_ascii=False, default=str)[:65000],
+        )
+        chunks = (
+            _call_openai_protocol(system_prompt=system_prompt, user_prompt=user_prompt, model=model, config=config)
+            if selected_provider == "openai"
+            else _call_anthropic_protocol(system_prompt=system_prompt, user_prompt=user_prompt, model=model, config=config)
+        )
+        raw = "".join(chunks).strip()
+        parsed = _parse_report_bundle_json_strict(raw) or {}
+        html_document, last_error = _extract_qualified_html_document(raw, parsed=parsed)
+        if html_document:
+            return {
+                "title": str(parsed.get("title", "") or title),
+                "summary": str(parsed.get("summary", "") or summary),
+                "assistant_message": str(
+                    parsed.get("assistant_message")
+                    or parsed.get("message")
+                    or ("HTML generated and replaced." if lang_code == "en" else "HTML 已生成并替换。")
+                ),
+                "html_document": html_document,
+                "chart_bindings": [],
+            }
+    raise RuntimeError(f"{HTML_REPORT_FAILURE_MESSAGE}: {last_error or 'html_document is not a standalone HTML document'}")
 
 
 def summarize_session_history_as_html(
@@ -1414,36 +1320,36 @@ def summarize_session_history_as_html(
         "iterations": compact_iterations,
     }
     system_prompt = get_prompt(config.prompts, "session_html_summary_system")
-    user_prompt = format_prompt(
-        config.prompts,
-        "session_html_summary_user",
-        report_language=report_language,
-        session_id=session_id,
-        context_block=json.dumps(context, ensure_ascii=False, default=str)[:65000],
-    )
-    chunks = (
-        _call_openai_protocol(system_prompt=system_prompt, user_prompt=user_prompt, model=model, config=config)
-        if selected_provider == "openai"
-        else _call_anthropic_protocol(system_prompt=system_prompt, user_prompt=user_prompt, model=model, config=config)
-    )
-    raw = "".join(chunks).strip()
-    parsed = _parse_report_bundle_json(raw) or {}
-    html_document = str(parsed.get("html_document", "") or "")
-    if not html_document:
-        html_document = _extract_html_document(raw)
-    if not html_document:
-        raise RuntimeError("AI did not return a complete HTML document")
-    return {
-        "title": str(parsed.get("title", "") or title),
-        "summary": str(parsed.get("summary", "") or ""),
-        "assistant_message": str(
-            parsed.get("assistant_message")
-            or parsed.get("message")
-            or ("Session history summarized as HTML." if lang_code == "en" else "已将当前会话历史总结为 HTML。")
-        ),
-        "html_document": html_document,
-        "chart_bindings": [],
-    }
+    last_error = ""
+    for _attempt in range(HTML_REPORT_MAX_ATTEMPTS):
+        user_prompt = format_prompt(
+            config.prompts,
+            "session_html_summary_user",
+            report_language=report_language,
+            session_id=session_id,
+            context_block=json.dumps(context, ensure_ascii=False, default=str)[:65000],
+        )
+        chunks = (
+            _call_openai_protocol(system_prompt=system_prompt, user_prompt=user_prompt, model=model, config=config)
+            if selected_provider == "openai"
+            else _call_anthropic_protocol(system_prompt=system_prompt, user_prompt=user_prompt, model=model, config=config)
+        )
+        raw = "".join(chunks).strip()
+        parsed = _parse_report_bundle_json_strict(raw) or {}
+        html_document, last_error = _extract_qualified_html_document(raw, parsed=parsed)
+        if html_document:
+            return {
+                "title": str(parsed.get("title", "") or title),
+                "summary": str(parsed.get("summary", "") or ""),
+                "assistant_message": str(
+                    parsed.get("assistant_message")
+                    or parsed.get("message")
+                    or ("Session history summarized as HTML." if lang_code == "en" else "已将当前会话历史总结为 HTML。")
+                ),
+                "html_document": html_document,
+                "chart_bindings": [],
+            }
+    raise RuntimeError(f"{HTML_REPORT_FAILURE_MESSAGE}: {last_error or 'html_document is not a standalone HTML document'}")
 
 
 def _compact_iteration_for_html(iteration: dict) -> dict:
@@ -1833,6 +1739,71 @@ def _looks_like_json_text(text: str) -> bool:
         return False
 
 
+def _parse_report_bundle_json_strict(raw: str) -> dict | None:
+    text = str(raw or "").strip()
+    if not text or not (text.startswith("{") and text.endswith("}")):
+        return None
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _extract_qualified_html_document(raw: str, parsed: dict | None = None) -> tuple[str, str]:
+    candidate = ""
+    parsed_obj = parsed if isinstance(parsed, dict) else None
+    if parsed_obj is not None:
+        candidate = str(parsed_obj.get("html_document", "") or "").strip()
+        if not candidate:
+            return "", "html_document is missing or empty"
+    else:
+        candidate = str(raw or "").strip()
+
+    if not _is_standalone_html_document(candidate):
+        return "", "html_document is not a standalone HTML document"
+    if _report_html_has_render_artifacts(candidate):
+        return "", "html_document contains visible JSON, markdown, escaped tags, or encoding artifacts"
+    if _report_html_has_forbidden_runtime_content(candidate):
+        return "", "html_document contains scripts, external stylesheets, event handlers, or javascript URLs"
+    if _is_visibly_empty_html_document(candidate):
+        return "", "html_document is visibly empty"
+    return candidate, ""
+
+
+def _report_html_has_forbidden_runtime_content(html_text: str) -> bool:
+    raw = str(html_text or "")
+    return bool(
+        re.search(r"<script\b", raw, flags=re.IGNORECASE)
+        or re.search(r"<link\b[^>]*rel\s*=\s*(['\"]?)stylesheet\1", raw, flags=re.IGNORECASE)
+        or re.search(r"\son[a-z]+\s*=\s*(['\"]).*?\1", raw, flags=re.IGNORECASE | re.DOTALL)
+        or re.search(r"(href|src)\s*=\s*([\"\'])\s*javascript:", raw, flags=re.IGNORECASE)
+    )
+
+
+def _build_mock_report_bundle(markdown_text: str, title: str) -> dict:
+    html_lang = "en" if get_lang() == "en" else "zh-CN"
+    safe_title = str(title or ("Analysis Report" if get_lang() == "en" else "分析报告"))
+    summary = _strip_markdown_to_plain_text(markdown_text)[:500]
+    body_text = summary or ("Mock report generated without an LLM provider." if get_lang() == "en" else "Mock 模式生成的测试报告。")
+    html_document = (
+        f"<!doctype html><html lang=\"{html_lang}\"><head><meta charset=\"UTF-8\"/>"
+        "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\"/>"
+        f"<title>{html.escape(safe_title)}</title>"
+        "<style>*{box-sizing:border-box}body{margin:0;font-family:Arial,sans-serif;background:#f8fafc;color:#111827;line-height:1.65}"
+        "main{max-width:960px;margin:0 auto;padding:40px 24px}.hero{background:#fff;border:1px solid #e2e8f0;border-radius:18px;padding:28px;box-shadow:0 18px 48px rgba(15,23,42,.08)}"
+        "h1{margin:0 0 14px;font-size:30px;line-height:1.2}p{margin:0;white-space:pre-wrap}</style>"
+        f"</head><body><main><section class=\"hero\"><h1>{html.escape(safe_title)}</h1><p>{html.escape(body_text)}</p></section></main></body></html>"
+    )
+    return {
+        "title": safe_title,
+        "summary": summary,
+        "html_document": html_document,
+        "chart_bindings": [],
+        "legacy_markdown": str(markdown_text or ""),
+    }
+
+
 def _repair_report_bundle_json(
     raw_response: str,
     fallback_markdown: str,
@@ -1883,15 +1854,8 @@ def _generate_html_document_by_llm(
         else _call_anthropic_protocol(system_prompt=system_prompt, user_prompt=user_prompt, model=model, config=config)
     )
     html_text = "".join(chunks).strip()
-    extracted = _extract_html_document(html_text)
-    if extracted and not _report_html_has_render_artifacts(extracted):
-        return extracted
-
-    fragment = _extract_html_from_json_like_text(html_text) or html_text
-    wrapped = _wrap_html_fragment_as_document(fragment)
-    if wrapped and not _report_html_has_render_artifacts(wrapped):
-        return wrapped
-    return ""
+    html_document, _ = _extract_qualified_html_document(html_text)
+    return html_document
 
 
 def _wrap_html_fragment_as_document(fragment: str) -> str:
