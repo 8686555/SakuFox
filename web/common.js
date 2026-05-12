@@ -82,7 +82,7 @@ const ZH_FALLBACK = {
   db_mount_search_empty: "\u6ca1\u6709\u5339\u914d\u7684\u8868\u540d",
   upload_files: "\u4e0a\u4f20\u672c\u5730\u6587\u4ef6",
   welcome_title: "\u5f00\u59cb\u6570\u636e\u63a2\u7d22",
-  welcome_desc: "\u8f93\u5165\u5206\u6790\u9700\u6c42\uff0cAI \u5c06\u81ea\u52a8\u53d6\u6570\u3001\u5206\u6790\uff0c\u5e76\u8f93\u51fa\u7ed3\u8bba\u3002<br />\u4f60\u4e5f\u53ef\u4ee5\u8865\u5145\u4e1a\u52a1\u77e5\u8bc6\u6216\u6cbf\u7740\u731c\u60f3\u7ee7\u7eed\u8fed\u4ee3\uff0c\u8ba9\u5206\u6790\u9010\u6b65\u6df1\u5165\u3002",
+  welcome_desc: "\u8f93\u5165\u5206\u6790\u9700\u6c42\uff0cAI \u5c06\u81ea\u52a8\u53d6\u6570\u3001\u5206\u6790\uff0c\u5e76\u8f93\u51fa\u7ed3\u8bba\u3002\n\u4f60\u4e5f\u53ef\u4ee5\u8865\u5145\u4e1a\u52a1\u77e5\u8bc6\u6216\u6cbf\u7740\u731c\u60f3\u7ee7\u7eed\u8fed\u4ee3\uff0c\u8ba9\u5206\u6790\u9010\u6b65\u6df1\u5165\u3002",
   input_placeholder: "\u8f93\u5165\u5206\u6790\u9700\u6c42\uff0c\u6216\u8865\u5145\u4e1a\u52a1\u77e5\u8bc6\uff08\u524d\u7f00\uff1a\u77e5\u8bc6:\uff09",
   one_click_analyze: "\u4e00\u952e\u5206\u6790",
   report_format_report: "\u62a5\u544a",
@@ -192,6 +192,7 @@ const ZH_FALLBACK = {
 const i18n = {
   lang: localStorage.getItem("lang") || "zh",
   translations: {},
+  lineBreakPattern: /<br\s*\/?>/gi,
   async init() {
     try {
       const res = await fetch(`/web/lang/${this.lang}.json`);
@@ -215,6 +216,27 @@ const i18n = {
     }
     return text;
   },
+  normalizeText(text) {
+    return String(text || "").replace(this.lineBreakPattern, "\n");
+  },
+  setTextWithOptionalIcon(el, text) {
+    const normalizedText = this.normalizeText(text);
+    const hasLineBreak = normalizedText.includes("\n");
+    if (hasLineBreak) {
+      el.style.whiteSpace = "pre-line";
+      el.dataset.i18nPreLine = "true";
+    } else if (el.dataset.i18nPreLine === "true") {
+      el.style.whiteSpace = "";
+      delete el.dataset.i18nPreLine;
+    }
+
+    const icon = el.querySelector(":scope > i[class*='fa-']");
+    if (icon) {
+      el.replaceChildren(icon.cloneNode(true), document.createTextNode(" " + normalizedText));
+    } else {
+      el.textContent = normalizedText;
+    }
+  },
   translatePage() {
     document.querySelectorAll("[data-i18n], [data-i18n-title]").forEach((el) => {
       const key = el.getAttribute("data-i18n");
@@ -223,14 +245,9 @@ const i18n = {
       if (key) {
         const text = this.t(key);
         if (el.tagName === "INPUT" || el.tagName === "TEXTAREA") {
-          el.placeholder = text;
+          el.placeholder = this.normalizeText(text);
         } else if (text && text !== key) {
-          const icon = el.querySelector(":scope > i[class*='fa-']");
-          if (icon) {
-            el.innerHTML = icon.outerHTML + " " + text;
-          } else {
-            el.textContent = text;
-          }
+          this.setTextWithOptionalIcon(el, text);
         }
       }
 

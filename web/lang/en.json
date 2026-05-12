@@ -61,7 +61,7 @@
   "connect_db": "Connect External DB",
   "upload_files": "Upload Files",
   "welcome_title": "Start Data Exploration",
-  "welcome_desc": "Enter your requirements, AI will pull data, analyze, and output conclusions.<br />Iterate by adding logic or following hypotheses.",
+  "welcome_desc": "Enter your requirements, AI will pull data, analyze, and output conclusions.\nIterate by adding logic or following hypotheses.",
   "input_placeholder": "Enter requirements or knowledge (prefix Knowledge: )",
   "one_click_analyze": "One-Click Analyze",
   "report_format_report": "Report",
