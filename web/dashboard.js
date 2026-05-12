@@ -10,6 +10,8 @@ let currentDbMountTableFilter = "";
 let uploadedFiles = [];
 
 let currentEditingSkillId = ""; // skill being edited, or "" for create mode
+let pendingSkillDraft = null;
+let isSavingSkill = false;
 
 let skillModal = null; // Global reference for the skill detail modal
 let skillSourceSessionId = "";
@@ -170,14 +172,6 @@ function releaseAnalysisControls(controller = null) {
 function normalizeStaticText() {
 
   document.title = i18n.t("app_title") || "SakuFox 🦊 - 敏捷智能数据分析平台";
-
-  const langLabel = document.getElementById("langLabel");
-
-  if (langLabel) {
-
-    langLabel.textContent = "English / 中文";
-
-  }
 
   const navAnalysis = document.querySelector('[data-i18n="nav_analysis"]');
   const navSqlToolbox = document.querySelector('[data-i18n="nav_sql_toolbox"]');
@@ -893,6 +887,7 @@ async function refreshSkills() {
 
 function loadSkillIntoForm(skillId, skill) {
   currentEditingSkillId = skillId;
+  pendingSkillDraft = null;
 
 
 
@@ -954,6 +949,7 @@ function loadSkillIntoForm(skillId, skill) {
     btn.parentNode.insertBefore(cancelLink, btn.nextSibling);
 
   }
+  cancelLink.style.display = "block";
 
 
 
@@ -964,19 +960,58 @@ function loadSkillIntoForm(skillId, skill) {
 }
 
 
+function setSkillSaveButtonMode(mode) {
+  const btn = document.getElementById("saveSkillBtn");
+  if (!btn) return;
+  if (mode === "edit") {
+    btn.innerHTML = `<i class="fa-solid fa-pen-to-square"></i> ${i18n.t('update_skill')}`;
+    btn.style.borderColor = "var(--accent, #6366f1)";
+  } else {
+    btn.innerHTML = `<i class="fa-solid fa-bookmark"></i> <span>${i18n.t("save") || "保存为经验"}</span>`;
+    btn.style.borderColor = "";
+  }
+}
+
+function setSkillFormValues(draft) {
+  document.getElementById("skillNameInput").value = draft.name || "";
+  if (document.getElementById("skillDescInput")) document.getElementById("skillDescInput").value = draft.description || "";
+  if (document.getElementById("skillTagsInput")) document.getElementById("skillTagsInput").value = Array.isArray(draft.tags) ? draft.tags.join(", ") : (draft.tags || "");
+  if (document.getElementById("skillKnowledgeInput")) {
+    document.getElementById("skillKnowledgeInput").value = Array.isArray(draft.knowledge) ? draft.knowledge.join("\n") : (draft.knowledge || "");
+  }
+  renderSkillContextSnapshot(draft.context_snapshot || null);
+}
+
+function clearSkillForm() {
+  document.getElementById("skillNameInput").value = "";
+  if (document.getElementById("skillDescInput")) document.getElementById("skillDescInput").value = "";
+  if (document.getElementById("skillTagsInput")) document.getElementById("skillTagsInput").value = "";
+  if (document.getElementById("skillKnowledgeInput")) document.getElementById("skillKnowledgeInput").value = "";
+  renderSkillContextSnapshot(null);
+}
+
+function openPendingSkillDraft() {
+  if (!pendingSkillDraft) return;
+  currentEditingSkillId = "";
+  const overwriteGroup = document.getElementById("overwriteSkillGroup");
+  if (overwriteGroup) overwriteGroup.style.display = "block";
+  setSkillFormValues(pendingSkillDraft);
+  setSkillSaveButtonMode("create");
+  const cancelLink = document.getElementById("skillEditCancelLink");
+  if (cancelLink) cancelLink.style.display = "none";
+  if (skillModal) skillModal.style.display = "flex";
+}
+
 
 function cancelSkillEdit() {
 
   currentEditingSkillId = "";
+  pendingSkillDraft = null;
 
-  document.getElementById("skillNameInput").value = "";
-
-  if (document.getElementById("skillDescInput")) document.getElementById("skillDescInput").value = "";
-
-  if (document.getElementById("skillTagsInput")) document.getElementById("skillTagsInput").value = "";
-
-  if (document.getElementById("skillKnowledgeInput")) document.getElementById("skillKnowledgeInput").value = "";
-  renderSkillContextSnapshot(null);
+  clearSkillForm();
+  setSkillSaveButtonMode("create");
+  const cancelLink = document.getElementById("skillEditCancelLink");
+  if (cancelLink) cancelLink.style.display = "none";
 
   if (skillModal) skillModal.style.display = "none";
 
@@ -1096,6 +1131,7 @@ async function switchSession(targetSessionId) {
   setSessionIdInUrl(targetSessionId);
 
   lastProposalId = "";
+  pendingSkillDraft = null;
 
 
 
@@ -1310,6 +1346,7 @@ function startNewSession() {
   setSessionIdInUrl("");
 
   lastProposalId = "";
+  pendingSkillDraft = null;
 
   cards.innerHTML = `
 
@@ -2853,6 +2890,7 @@ document.getElementById("questionInput").onkeydown = (e) => {
 
 
 document.getElementById("saveSkillBtn").onclick = async () => {
+  if (isSavingSkill) return;
 
   try {
 
@@ -2872,6 +2910,12 @@ document.getElementById("saveSkillBtn").onclick = async () => {
 
     const knowledge = knowledgeRaw ? knowledgeRaw.split("\n").map(l => l.trim()).filter(Boolean) : [];
 
+    const btn = document.getElementById("saveSkillBtn");
+    isSavingSkill = true;
+    if (btn) {
+      btn.disabled = true;
+      btn.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i> ${i18n.t("saving") || "保存中..."}`;
+    }
 
 
     if (currentEditingSkillId) {
@@ -2894,7 +2938,8 @@ document.getElementById("saveSkillBtn").onclick = async () => {
 
       // --- CREATE new skill from proposal ---
 
-      if (!lastProposalId) { alert(i18n.t("no_proposal_to_save") || "暂无成功执行的迭代记录可保存"); return; }
+      const proposalId = pendingSkillDraft?.proposal_id || lastProposalId;
+      if (!proposalId) { alert(i18n.t("no_proposal_to_save") || "暂无成功执行的迭代记录可保存"); return; }
 
       const overwriteSelect = document.getElementById("overwriteSkillSelect");
 
@@ -2908,7 +2953,7 @@ document.getElementById("saveSkillBtn").onclick = async () => {
 
         body: JSON.stringify({
 
-          proposal_id: lastProposalId,
+          proposal_id: proposalId,
 
           name,
 
@@ -2928,14 +2973,8 @@ document.getElementById("saveSkillBtn").onclick = async () => {
 
       addCard(i18n.t("skill_saved") || "经验已保存", `<div>${isOverwrite ? (i18n.t('success_update') || '更新成功：') : (i18n.t('success_save') || '保存成功：')}<strong>${data.skill.name}</strong>${data.skill.version ? ` (v${data.skill.version})` : ''}${desc ? `<div style="font-size:12px;color:var(--text-muted);margin-top:4px;">${escapeHtml(desc)}</div>` : ''}</div>`);
 
-      document.getElementById("skillNameInput").value = "";
-
-      if (document.getElementById("skillDescInput")) document.getElementById("skillDescInput").value = "";
-
-      if (document.getElementById("skillTagsInput")) document.getElementById("skillTagsInput").value = "";
-
-      if (document.getElementById("skillKnowledgeInput")) document.getElementById("skillKnowledgeInput").value = "";
-
+      pendingSkillDraft = null;
+      clearSkillForm();
 
 
       if (skillModal) skillModal.style.display = "none";
@@ -2948,6 +2987,13 @@ document.getElementById("saveSkillBtn").onclick = async () => {
 
     addCard(i18n.t("op_failed") || "操作失败", `<div style="color: #ef4444">${e.message}</div>`);
 
+  } finally {
+    isSavingSkill = false;
+    const btn = document.getElementById("saveSkillBtn");
+    if (btn) {
+      btn.disabled = false;
+      setSkillSaveButtonMode(currentEditingSkillId ? "edit" : "create");
+    }
   }
 
 };
@@ -3131,8 +3177,6 @@ if (closeSkillModalBtn) {
   closeSkillModalBtn.onclick = () => {
 
     if (skillModal) skillModal.style.display = "none";
-
-    cancelSkillEdit();
 
   }
 
@@ -3608,7 +3652,6 @@ window.onclick = (event) => {
   }
   if (event.target === skillModal) {
     skillModal.style.display = "none";
-    cancelSkillEdit();
   }
   if (event.target === skillMountModal) {
     closeSkillMountModal();
@@ -4160,22 +4203,26 @@ async function proposeSkillMetadata(proposalId, userMessage) {
 
 
 
+    pendingSkillDraft = {
+      proposal_id: proposalId,
+      name: distilledData.name || "",
+      description: distilledData.description || "",
+      tags: Array.isArray(distilledData.tags) ? distilledData.tags : [],
+      knowledge: Array.isArray(distilledData.knowledge) ? distilledData.knowledge : [],
+      context_snapshot: distilledData.context_snapshot || null,
+    };
+
     // Populate the hidden form fields for the modal
-
-    if (distilledData.name && nameInput) nameInput.value = distilledData.name;
-
-    if (distilledData.description && descInput) descInput.value = distilledData.description;
-
-    if (Array.isArray(distilledData.tags) && tagsInput) tagsInput.value = distilledData.tags.join(", ");
-
-    if (Array.isArray(distilledData.knowledge) && knowledgeInput) knowledgeInput.value = distilledData.knowledge.join("\n");
+    setSkillFormValues(pendingSkillDraft);
 
 
 
     // Clear skill id to ensure create mode
 
     currentEditingSkillId = "";
-    renderSkillContextSnapshot(distilledData.context_snapshot || null);
+    setSkillSaveButtonMode("create");
+    const cancelLink = document.getElementById("skillEditCancelLink");
+    if (cancelLink) cancelLink.style.display = "none";
 
     
 
@@ -4203,7 +4250,7 @@ async function proposeSkillMetadata(proposalId, userMessage) {
 
           // Automatically select if the proposed name exactly matches an existing skill
 
-          const exactMatch = res.skills.find(sk => sk.name === distilledData.name);
+          const exactMatch = res.skills.find(sk => sk.name === pendingSkillDraft?.name);
 
           if (exactMatch) overwriteSelect.value = exactMatch.skill_id;
 
@@ -4248,20 +4295,7 @@ async function proposeSkillMetadata(proposalId, userMessage) {
     if (reviewBtn) {
 
       reviewBtn.onclick = () => {
-
-        if (skillModal) {
-
-            skillModal.style.display = "flex";
-
-        } else {
-
-            // Fallback if global init failed
-
-            const m = document.getElementById("skillModal");
-
-            if (m) m.style.display = "flex";
-
-        }
+        openPendingSkillDraft();
 
       };
 

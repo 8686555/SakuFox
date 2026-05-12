@@ -207,6 +207,8 @@ const i18n = {
         this.translations = { ...ZH_FALLBACK };
         this.translatePage();
       }
+    } finally {
+      this.syncLanguageSelect();
     }
   },
   t(key, params = {}) {
@@ -259,10 +261,26 @@ const i18n = {
       }
     });
   },
-  toggle() {
-    this.lang = this.lang === "zh" ? "en" : "zh";
+  syncLanguageSelect() {
+    document.querySelectorAll("#langSelect, [data-lang-select]").forEach((select) => {
+      if (!select || select.tagName !== "SELECT") return;
+      select.value = this.lang;
+      if (select.dataset.langSelectBound === "true") return;
+      select.dataset.langSelectBound = "true";
+      select.addEventListener("change", (event) => {
+        this.setLang(event.target.value);
+      });
+    });
+  },
+  setLang(lang) {
+    const nextLang = lang === "en" ? "en" : "zh";
+    if (nextLang === this.lang) return;
+    this.lang = nextLang;
     localStorage.setItem("lang", this.lang);
     window.location.reload();
+  },
+  toggle() {
+    this.setLang(this.lang === "zh" ? "en" : "zh");
   }
 };
 

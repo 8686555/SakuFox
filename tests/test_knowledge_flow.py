@@ -102,6 +102,65 @@ def test_knowledge_assets_workbench_endpoints_cover_kb_upload_and_experience():
     assert "48小时内允许原路退款" in content_res.json()["content"]
 
 
+def test_save_skill_from_same_proposal_is_idempotent():
+    headers = _login_admin()
+
+    _, _, proposal_id = _run_mock_iteration(headers, message="save this experience once")
+    first_res = client.post(
+        "/api/skills/save",
+        headers=headers,
+        json={"proposal_id": proposal_id, "name": "dedupe-experience", "knowledge": ["same rule"]},
+    )
+    assert first_res.status_code == 200
+    first_skill_id = first_res.json()["skill"]["skill_id"]
+
+    second_res = client.post(
+        "/api/skills/save",
+        headers=headers,
+        json={"proposal_id": proposal_id, "name": "dedupe-experience", "knowledge": ["same rule"]},
+    )
+    assert second_res.status_code == 200
+    assert second_res.json()["skill"]["skill_id"] == first_skill_id
+
+    skills_res = client.get("/api/skills", headers=headers)
+    assert skills_res.status_code == 200
+    linked_skills = [
+        item
+        for item in skills_res.json()["skills"]
+        if (((item.get("layers") or {}).get("context_snapshot") or {}).get("source") or {}).get("proposal_id") == proposal_id
+    ]
+    assert [item["skill_id"] for item in linked_skills] == [first_skill_id]
+
+
+def test_save_skill_with_overwrite_still_updates_existing_skill():
+    headers = _login_admin()
+
+    _, _, proposal_id = _run_mock_iteration(headers, message="overwrite this experience")
+    first_res = client.post(
+        "/api/skills/save",
+        headers=headers,
+        json={"proposal_id": proposal_id, "name": "overwrite-experience", "knowledge": ["v1 rule"]},
+    )
+    assert first_res.status_code == 200
+    first_skill = first_res.json()["skill"]
+
+    overwrite_res = client.post(
+        "/api/skills/save",
+        headers=headers,
+        json={
+            "proposal_id": proposal_id,
+            "name": "overwrite-experience-updated",
+            "knowledge": ["v2 rule"],
+            "overwrite_skill_id": first_skill["skill_id"],
+        },
+    )
+    assert overwrite_res.status_code == 200
+    updated_skill = overwrite_res.json()["skill"]
+    assert updated_skill["skill_id"] == first_skill["skill_id"]
+    assert updated_skill["name"] == "overwrite-experience-updated"
+    assert updated_skill["version"] == first_skill.get("version", 1) + 1
+
+
 def test_knowledge_index_search_debug_returns_locator_and_readable_asset():
     headers = _login_admin()
 

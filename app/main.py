@@ -2830,7 +2830,22 @@ def save_skill(req: SaveSkillRequest, user: User = Depends(get_current_user)):
     try:
         # Extract session_id from proposal if available (for knowledge extraction)
         proposal = store.proposals.get(req.proposal_id, {})
+        if not proposal:
+            raise ValueError(t("error_proposal_not_found", default="提案不存在"))
+        if proposal.get("user_id") != user.user_id:
+            raise PermissionError(t("error_no_permission_save_proposal", default="仅可保存自己的提案"))
+        if proposal.get("status") != "executed":
+            raise ValueError(t("error_not_executed_proposal", default="仅可保存已执行提案"))
         session_id = proposal.get("session_id")
+        if not req.overwrite_skill_id:
+            linked_skill = _linked_skill_map_by_proposal().get(req.proposal_id)
+            if linked_skill:
+                asset = store.publish_experience_asset(
+                    skill_id=linked_skill["skill_id"],
+                    name=linked_skill.get("name"),
+                    description=linked_skill.get("description"),
+                )
+                return {"skill": linked_skill, "asset": asset}
         skill = save_skill_from_proposal(
             user=user,
             proposal_id=req.proposal_id,

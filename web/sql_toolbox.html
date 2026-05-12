@@ -141,9 +141,13 @@
         <a href="/web/knowledge.html" class="nav-link" data-i18n="nav_knowledge" style="color: #64748b; text-decoration: none; font-weight: 500; font-size: 15px; padding-bottom: 4px; transition: color 0.2s;" onmouseover="this.style.color='#2b3a4a'" onmouseout="this.style.color='#64748b'">知识库配置</a>
       </div>
       <div class="user-area" style="display: flex; align-items: center; gap: 12px;">
-        <button class="btn btn-outline btn-sm" onclick="i18n.toggle()" style="border-radius: 20px; padding: 4px 12px; font-size: 12px;">
-          <i class="fa-solid fa-language"></i> <span id="langLabel">English / 中文</span>
-        </button>
+        <label class="btn btn-outline btn-sm" style="border-radius: 20px; padding: 4px 12px; font-size: 12px; display: inline-flex; align-items: center; gap: 6px;">
+          <i class="fa-solid fa-language"></i>
+          <select id="langSelect" data-lang-select style="border: 0; background: transparent; color: inherit; font: inherit; font-weight: 700; outline: none; cursor: pointer;">
+            <option value="zh">中文</option>
+            <option value="en">English</option>
+          </select>
+        </label>
         <div id="userInfo" class="user-info"></div>
       </div>
     </header>
