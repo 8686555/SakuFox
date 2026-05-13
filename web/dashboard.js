@@ -38,6 +38,26 @@ const chatPlusBtn = document.getElementById("chatPlusBtn");
 const chatPlusMenu = document.getElementById("chatPlusMenu");
 const menuAutoAnalyzeBtn = document.getElementById("menuAutoAnalyzeBtn");
 const summarizeSessionHtmlBtn = document.getElementById("summarizeSessionHtmlBtn");
+const observabilityToggleBtn = document.getElementById("observabilityToggleBtn");
+const observabilityPanel = document.getElementById("observabilityPanel");
+const observabilityDragHandle = document.getElementById("observabilityDragHandle");
+const observabilityCloseBtn = document.getElementById("observabilityCloseBtn");
+const observabilityMeta = document.getElementById("observabilityMeta");
+const observabilityStatus = document.getElementById("observabilityStatus");
+const observabilityCount = document.getElementById("observabilityCount");
+const observabilityTimeline = document.getElementById("observabilityTimeline");
+const observabilityDetail = document.getElementById("observabilityDetail");
+
+const observabilityState = {
+  events: [],
+  selectedEventId: "",
+  open: false,
+  running: false,
+  mode: "",
+  sessionId: "",
+  iterationId: "",
+  stopReason: "",
+};
 
 
 
@@ -122,7 +142,7 @@ function updateAiCard(wrapper, title, html, thought = null) {
 }
 
 function getStopButtonText() {
-  return (window.i18n && i18n.lang) === "en" ? "Stop" : "停止";
+  return i18n.t("stop");
 }
 
 function setAnalysisRunningState(running, mode = "", wrapper = null) {
@@ -131,7 +151,7 @@ function setAnalysisRunningState(running, mode = "", wrapper = null) {
   const stopText = getStopButtonText();
 
   if (sendBtn) {
-    if (!sendBtn.dataset.normalLabel) sendBtn.dataset.normalLabel = sendBtn.textContent || "发送";
+    if (!sendBtn.dataset.normalLabel) sendBtn.dataset.normalLabel = sendBtn.textContent || i18n.t("send");
     sendBtn.textContent = running ? stopText : sendBtn.dataset.normalLabel;
     sendBtn.classList.toggle("btn-danger", running);
     sendBtn.classList.toggle("btn-primary", !running);
@@ -139,7 +159,7 @@ function setAnalysisRunningState(running, mode = "", wrapper = null) {
   }
 
   if (autoBtn) {
-    if (!autoBtn.dataset.normalLabel) autoBtn.dataset.normalLabel = autoBtn.textContent || "一键分析";
+    if (!autoBtn.dataset.normalLabel) autoBtn.dataset.normalLabel = autoBtn.textContent || i18n.t("one_click_analyze");
     autoBtn.disabled = running;
     autoBtn.textContent = autoBtn.dataset.normalLabel;
     autoBtn.classList.toggle("btn-disabled", running);
@@ -158,6 +178,190 @@ function stopActiveAnalysis() {
   if (activeAnalysisController) {
     activeAnalysisController.abort();
   }
+}
+
+function normalizeObservabilityEvent(event) {
+  const normalized = event && typeof event === "object" ? { ...event } : {};
+  normalized.event_id = normalized.event_id || `trace_${Date.now().toString(36)}_${Math.random().toString(16).slice(2, 8)}`;
+  normalized.event_type = normalized.event_type || "trace_event";
+  normalized.timestamp = normalized.timestamp || new Date().toISOString();
+  return normalized;
+}
+
+function getObservabilityEventLabel(type) {
+  const labels = {
+    run_started: i18n.t("observability_event_run_started"),
+    llm_request: i18n.t("observability_event_llm_request"),
+    llm_response: i18n.t("observability_event_llm_response"),
+    tool_started: i18n.t("observability_event_tool_started"),
+    tool_result: i18n.t("observability_event_tool_result"),
+    round_result: i18n.t("observability_event_round_result"),
+    report_generation: i18n.t("observability_event_report_generation"),
+    run_completed: i18n.t("observability_event_run_completed"),
+    error: i18n.t("observability_event_error"),
+  };
+  return labels[type] || type;
+}
+
+function getObservabilityEventIcon(type) {
+  if (type === "llm_request" || type === "llm_response") return "fa-brain";
+  if (type === "tool_started" || type === "tool_result") return "fa-screwdriver-wrench";
+  if (type === "report_generation") return "fa-file-code";
+  if (type === "error") return "fa-circle-exclamation";
+  if (type === "run_completed") return "fa-circle-check";
+  return "fa-circle-nodes";
+}
+
+function setObservabilityOpen(open) {
+  if (!observabilityPanel) return;
+  observabilityState.open = !!open;
+  observabilityPanel.classList.toggle("open", observabilityState.open);
+  observabilityPanel.setAttribute("aria-hidden", observabilityState.open ? "false" : "true");
+}
+
+function resetObservabilityTrace(meta = {}) {
+  observabilityState.events = [];
+  observabilityState.selectedEventId = "";
+  observabilityState.running = !!meta.running;
+  observabilityState.mode = meta.mode || "";
+  observabilityState.sessionId = meta.sessionId || "";
+  observabilityState.iterationId = meta.iterationId || "";
+  observabilityState.stopReason = meta.stopReason || "";
+  renderObservabilityPanel();
+}
+
+function appendObservabilityEvent(event) {
+  const normalized = normalizeObservabilityEvent(event);
+  observabilityState.events.push(normalized);
+  if (!observabilityState.selectedEventId) {
+    observabilityState.selectedEventId = normalized.event_id;
+  }
+  if (normalized.event_type === "run_completed") {
+    observabilityState.running = false;
+    observabilityState.stopReason = normalized.stop_reason || observabilityState.stopReason;
+  }
+  if (normalized.session_id) observabilityState.sessionId = normalized.session_id;
+  if (normalized.iteration_id) observabilityState.iterationId = normalized.iteration_id;
+  renderObservabilityPanel();
+}
+
+function loadObservabilityTrace(events, meta = {}) {
+  resetObservabilityTrace(meta);
+  observabilityState.events = (Array.isArray(events) ? events : []).map(normalizeObservabilityEvent);
+  const last = observabilityState.events[observabilityState.events.length - 1] || {};
+  observabilityState.selectedEventId = last.event_id || "";
+  observabilityState.running = false;
+  observabilityState.stopReason = meta.stopReason || last.stop_reason || "";
+  renderObservabilityPanel();
+}
+
+function buildObservabilityMetaText() {
+  const parts = [];
+  if (observabilityState.mode) parts.push(observabilityState.mode);
+  if (observabilityState.sessionId) parts.push(`session=${observabilityState.sessionId}`);
+  if (observabilityState.iterationId) parts.push(`iteration=${observabilityState.iterationId}`);
+  if (observabilityState.stopReason) parts.push(`stop=${observabilityState.stopReason}`);
+  return parts.join(" | ") || "-";
+}
+
+function renderObservabilityPanel() {
+  if (!observabilityPanel || !observabilityTimeline || !observabilityDetail) return;
+  if (observabilityMeta) observabilityMeta.textContent = buildObservabilityMetaText();
+  if (observabilityStatus) {
+    observabilityStatus.textContent = observabilityState.running
+      ? i18n.t("observability_running")
+      : (observabilityState.events.length ? i18n.t("observability_ready") : i18n.t("observability_idle"));
+  }
+  if (observabilityCount) observabilityCount.textContent = i18n.t("observability_event_count", { count: observabilityState.events.length });
+
+  observabilityTimeline.innerHTML = observabilityState.events.length
+    ? observabilityState.events.map((event) => {
+        const active = event.event_id === observabilityState.selectedEventId ? " active" : "";
+        const round = event.round ? `${i18n.t("step")} ${escapeHtml(event.round)}` : "";
+        const stage = event.stage || event.prompt_key || event.tool || "";
+        return `
+          <button class="observability-event${active}" type="button" data-event-id="${escapeHtml(event.event_id)}">
+            <div class="observability-event-type"><i class="fa-solid ${getObservabilityEventIcon(event.event_type)}"></i> ${escapeHtml(getObservabilityEventLabel(event.event_type))}</div>
+            <div class="observability-event-meta">${escapeHtml([round, stage, event.timestamp].filter(Boolean).join(" | "))}</div>
+          </button>
+        `;
+      }).join("")
+    : `<div class="observability-detail-empty">${escapeHtml(i18n.t("observability_empty"))}</div>`;
+
+  const selected = observabilityState.events.find((event) => event.event_id === observabilityState.selectedEventId);
+  observabilityDetail.innerHTML = selected ? buildObservabilityDetailHtml(selected) : `<div class="observability-detail-empty">${escapeHtml(i18n.t("observability_select_event"))}</div>`;
+
+  observabilityTimeline.querySelectorAll(".observability-event").forEach((button) => {
+    button.onclick = () => {
+      observabilityState.selectedEventId = button.getAttribute("data-event-id") || "";
+      renderObservabilityPanel();
+    };
+  });
+}
+
+function buildObservabilityDetailHtml(event) {
+  const sections = [];
+  const addSection = (title, value, asJson = false) => {
+    if (value === undefined || value === null || value === "") return;
+    const text = asJson ? JSON.stringify(value, null, 2) : String(value);
+    sections.push(`
+      <section class="observability-detail-section">
+        <h4>${escapeHtml(title)}</h4>
+        <pre><code>${escapeHtml(text)}</code></pre>
+      </section>
+    `);
+  };
+  const summary = { ...event };
+  delete summary.system_prompt;
+  delete summary.user_prompt;
+  delete summary.raw_response;
+  delete summary.code;
+  addSection(i18n.t("observability_summary"), summary, true);
+  addSection(i18n.t("observability_system_prompt"), event.system_prompt);
+  addSection(i18n.t("observability_user_prompt"), event.user_prompt);
+  addSection(i18n.t("observability_raw_response"), event.raw_response);
+  addSection(i18n.t("observability_code"), event.code);
+  return sections.join("");
+}
+
+function initObservabilityPanel() {
+  if (!observabilityPanel) return;
+  const savedPosition = JSON.parse(localStorage.getItem("observabilityPanelPosition") || "null");
+  if (savedPosition && Number.isFinite(savedPosition.left) && Number.isFinite(savedPosition.top)) {
+    observabilityPanel.style.left = `${savedPosition.left}px`;
+    observabilityPanel.style.top = `${savedPosition.top}px`;
+    observabilityPanel.style.right = "auto";
+  }
+  if (observabilityToggleBtn) observabilityToggleBtn.onclick = () => setObservabilityOpen(!observabilityState.open);
+  if (observabilityCloseBtn) observabilityCloseBtn.onclick = () => setObservabilityOpen(false);
+  if (!observabilityDragHandle) return;
+
+  let dragState = null;
+  observabilityDragHandle.addEventListener("pointerdown", (event) => {
+    if (event.target.closest("button")) return;
+    const rect = observabilityPanel.getBoundingClientRect();
+    dragState = {
+      offsetX: event.clientX - rect.left,
+      offsetY: event.clientY - rect.top,
+    };
+    observabilityDragHandle.setPointerCapture(event.pointerId);
+  });
+  observabilityDragHandle.addEventListener("pointermove", (event) => {
+    if (!dragState) return;
+    const maxLeft = Math.max(0, window.innerWidth - observabilityPanel.offsetWidth);
+    const maxTop = Math.max(0, window.innerHeight - observabilityPanel.offsetHeight);
+    const left = Math.min(maxLeft, Math.max(0, event.clientX - dragState.offsetX));
+    const top = Math.min(maxTop, Math.max(0, event.clientY - dragState.offsetY));
+    observabilityPanel.style.left = `${left}px`;
+    observabilityPanel.style.top = `${top}px`;
+    observabilityPanel.style.right = "auto";
+  });
+  observabilityDragHandle.addEventListener("pointerup", () => {
+    if (!dragState) return;
+    dragState = null;
+    const rect = observabilityPanel.getBoundingClientRect();
+    localStorage.setItem("observabilityPanelPosition", JSON.stringify({ left: rect.left, top: rect.top }));
+  });
 }
 
 function releaseAnalysisControls(controller = null) {
@@ -1173,12 +1377,12 @@ async function switchSession(targetSessionId) {
 
         renderAutoAnalysisCard(wrapper, {
           mode: iter.mode === "auto_analysis" ? "auto" : "iterate",
-          title: iter.mode === "auto_analysis" ? "一键分析" : (i18n.t("analysis_conclusion") || "分析结果"),
+          title: iter.mode === "auto_analysis" ? i18n.t("one_click_analyze") : i18n.t("analysis_conclusion"),
           status: iter.report_meta?.stop_reason
-            ? `${i18n.t("analysis_conclusion") || "分析结果"} | ${iter.report_meta.stop_reason}`
-            : (iter.mode === "auto_analysis" ? "已完成分析" : "已完成迭代"),
+            ? `${i18n.t("analysis_conclusion")} | ${iter.report_meta.stop_reason}`
+            : (iter.mode === "auto_analysis" ? i18n.t("analysis_completed") : i18n.t("iteration_completed")),
           stopReason: iter.report_meta?.stop_reason || "",
-          reportTitle: iter.report_title || (iter.mode === "auto_analysis" ? "自动分析报告" : ""),
+          reportTitle: iter.report_title || (iter.mode === "auto_analysis" ? i18n.t("auto_analysis_report") : ""),
           reportSummary: iter.final_report_summary || (iter.final_report_md || "").slice(0, 500),
           reportHtml: iter.final_report_html || "",
           reportChartBindings: iter.final_report_chart_bindings || [],
@@ -1330,6 +1534,21 @@ async function switchSession(targetSessionId) {
 
     });
 
+    const tracedIteration = [...res.iterations].reverse().find((iter) => {
+      const trace = (iter.report_meta || {}).observability_trace;
+      return Array.isArray(trace) && trace.length > 0;
+    });
+    if (tracedIteration) {
+      loadObservabilityTrace((tracedIteration.report_meta || {}).observability_trace, {
+        mode: tracedIteration.mode || "",
+        sessionId: tracedIteration.session_id || targetSessionId,
+        iterationId: tracedIteration.iteration_id || "",
+        stopReason: (tracedIteration.report_meta || {}).stop_reason || "",
+      });
+    } else {
+      resetObservabilityTrace({ sessionId: targetSessionId });
+    }
+
   } catch (e) {
 
     cards.innerHTML = `<div style="padding:20px;color:#ef4444;">${i18n.t("load_failed") || "加载失败"}: ${escapeHtml(e.message)}</div>`;
@@ -1347,6 +1566,7 @@ function startNewSession() {
 
   lastProposalId = "";
   pendingSkillDraft = null;
+  resetObservabilityTrace({});
 
   cards.innerHTML = `
 
@@ -2216,13 +2436,13 @@ function replayAutoAnalysisIteration(iter, wrapper) {
   renderAutoAnalysisCard(wrapper, {
     mode: "auto",
 
-    title: "一键分析",
+    title: i18n.t("one_click_analyze"),
 
-    status: `已完成 ${((iter.report_meta || {}).rounds_completed || (iter.loop_rounds || []).length)} 轮`,
+    status: i18n.t("completed_rounds", { count: ((iter.report_meta || {}).rounds_completed || (iter.loop_rounds || []).length) }),
 
     stopReason: (iter.report_meta || {}).stop_reason || "",
 
-    reportTitle: iter.report_title || "自动分析报告",
+    reportTitle: iter.report_title || i18n.t("auto_analysis_report"),
 
     reportSummary: iter.final_report_summary || (iter.final_report_md || "").slice(0, 500),
 
@@ -2382,6 +2602,7 @@ async function handleSend(hypothesisId = null) {
     liveThought: "",
     complete: false,
   };
+  resetObservabilityTrace({ running: true, mode: "manual", sessionId: sessionId || "" });
 
   const controller = new AbortController();
   activeAnalysisController = controller;
@@ -2492,6 +2713,11 @@ async function handleSend(hypothesisId = null) {
             sessionId = data.data.session_id;
 
             lastProposalId = data.data.proposal_id; // For skill saving
+            observabilityState.sessionId = data.data.session_id || observabilityState.sessionId;
+            observabilityState.iterationId = data.data.iteration_id || observabilityState.iterationId;
+            observabilityState.stopReason = data.data.stop_reason || observabilityState.stopReason;
+            observabilityState.running = false;
+            renderObservabilityPanel();
 
             notebookState.stopReason = data.data.stop_reason || notebookState.stopReason;
             notebookState.complete = true;
@@ -2504,6 +2730,10 @@ async function handleSend(hypothesisId = null) {
             // Auto-refresh session list so current session appears immediately
 
             refreshSessions();
+
+          } else if (data.type === "trace_event") {
+
+            appendObservabilityEvent(data.data || {});
 
           } else if (data.type === "error") {
 
@@ -2538,8 +2768,13 @@ async function handleSend(hypothesisId = null) {
       notebookState.stopReason = "stopped_by_user";
       notebookState.status = i18n.t("analysis_stopped") || (i18n.lang === "en" ? "Stopped" : "已停止");
       notebookState.complete = true;
+      observabilityState.running = false;
+      observabilityState.stopReason = "stopped_by_user";
+      renderObservabilityPanel();
       renderAutoAnalysisCard(wrapper, notebookState);
     } else {
+      observabilityState.running = false;
+      renderObservabilityPanel();
       updateAiCard(wrapper, i18n.t("request_failed") || "请求失败", `<div style="color: #ef4444">${e.message}</div>`);
     }
   } finally {
@@ -2634,9 +2869,9 @@ async function handleAutoAnalyze() {
   const state = {
     mode: "auto",
 
-    title: isEn ? "Auto Analyze" : "一键分析",
+    title: i18n.t("one_click_analyze"),
 
-    status: isEn ? "Preparing auto analysis" : "准备开始自动分析",
+    status: i18n.t("preparing_auto_analysis"),
 
     stopReason: "",
 
@@ -2659,6 +2894,7 @@ async function handleAutoAnalyze() {
   };
 
   renderAutoAnalysisCard(wrapper, state);
+  resetObservabilityTrace({ running: true, mode: "auto_analysis", sessionId: sessionId || "" });
 
   const controller = new AbortController();
   activeAnalysisController = controller;
@@ -2716,22 +2952,20 @@ async function handleAutoAnalyze() {
 
           const payload = JSON.parse(line);
 
-          if (payload.type === "loop_status") {
+          if (payload.type === "trace_event") {
+
+            appendObservabilityEvent(payload.data || {});
+
+          } else if (payload.type === "loop_status") {
 
             const data = payload.data || {};
 
-            const phaseMap = isEn
-              ? {
-                  planning: "Planning",
-                  thinking: "Thinking",
-                  report_generating: "Generating report",
-                }
-              : {
-                  planning: "规划中",
-                  thinking: "思考中",
-                  report_generating: "报告生成中",
-                };
-            const phase = phaseMap[data.phase] || (isEn ? "Processing" : "处理中");
+            const phaseMap = {
+              planning: i18n.t("planning_phase"),
+              thinking: i18n.t("thinking_phase"),
+              report_generating: i18n.t("report_generating_phase"),
+            };
+            const phase = phaseMap[data.phase] || i18n.t("processing");
 
             state.status = isEn
               ? `Round ${data.round || 0} ${phase}`
@@ -2750,9 +2984,7 @@ async function handleAutoAnalyze() {
 
             state.liveThought = "";
 
-            state.status = isEn
-              ? `Completed ${state.rounds.filter(Boolean).length} rounds`
-              : `已完成 ${state.rounds.filter(Boolean).length} 轮`;
+            state.status = i18n.t("completed_rounds", { count: state.rounds.filter(Boolean).length });
 
             renderAutoAnalysisCard(wrapper, state);
 
@@ -2760,7 +2992,7 @@ async function handleAutoAnalyze() {
 
             const data = payload.data || {};
 
-            state.reportTitle = data.title || state.reportTitle || (isEn ? "Auto Analysis Report" : "自动分析报告");
+            state.reportTitle = data.title || state.reportTitle || i18n.t("auto_analysis_report");
 
             state.reportSummary = data.summary || state.reportSummary || "";
 
@@ -2772,7 +3004,7 @@ async function handleAutoAnalyze() {
 
             state.stopReason = data.stop_reason || "";
 
-            state.status = isEn ? "Finalizing report" : "正在整理最终报告";
+            state.status = i18n.t("finalizing_report");
 
             renderAutoAnalysisCard(wrapper, state);
 
@@ -2783,12 +3015,15 @@ async function handleAutoAnalyze() {
             sessionId = data.session_id || sessionId;
 
             lastProposalId = data.proposal_id || lastProposalId;
+            observabilityState.sessionId = data.session_id || observabilityState.sessionId;
+            observabilityState.iterationId = data.iteration_id || observabilityState.iterationId;
+            observabilityState.stopReason = data.stop_reason || observabilityState.stopReason;
+            observabilityState.running = false;
+            renderObservabilityPanel();
 
             state.stopReason = data.stop_reason || state.stopReason;
 
-            state.status = isEn
-              ? `Completed ${data.rounds_completed || state.rounds.length} rounds`
-              : `已完成 ${data.rounds_completed || state.rounds.length} 轮`;
+            state.status = i18n.t("completed_rounds", { count: data.rounds_completed || state.rounds.length });
 
             const reportLang = (window.i18n && i18n.lang) || localStorage.getItem("lang") || "zh";
             const baseUrl = data.report_url || state.reportUrl || "";
@@ -2798,7 +3033,7 @@ async function handleAutoAnalyze() {
                 : `${baseUrl}${baseUrl.includes("?") ? "&" : "?"}lang=${encodeURIComponent(reportLang)}`)
               : "";
 
-            state.reportTitle = data.report_title || state.reportTitle || (isEn ? "Auto Analysis Report" : "自动分析报告");
+            state.reportTitle = data.report_title || state.reportTitle || i18n.t("auto_analysis_report");
 
             state.complete = true;
 
@@ -2826,10 +3061,15 @@ async function handleAutoAnalyze() {
   } catch (e) {
     if (e && e.name === "AbortError") {
       state.stopReason = "stopped_by_user";
-      state.status = isEn ? "Stopped" : "已停止";
+      state.status = i18n.t("analysis_stopped");
       state.complete = true;
+      observabilityState.running = false;
+      observabilityState.stopReason = "stopped_by_user";
+      renderObservabilityPanel();
       renderAutoAnalysisCard(wrapper, state);
     } else {
+      observabilityState.running = false;
+      renderObservabilityPanel();
       updateAiCard(wrapper, i18n.t("request_failed") || "请求失败", `<div style="color: #ef4444">${escapeHtml(e.message)}</div>`);
     }
   } finally {
@@ -3026,7 +3266,7 @@ document.getElementById("uploadBtn").onclick = async () => {
 
     const originalText = btn.innerHTML;
 
-    btn.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i> ${i18n.t('uploading') || '涓婁紶涓?..'}`;
+    btn.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i> ${i18n.t('uploading')}`;
 
     btn.disabled = true;
 
@@ -3094,7 +3334,7 @@ document.getElementById("uploadBtn").onclick = async () => {
 
         const doc = f.document || null;
         const documentMeta = doc
-          ? `<div>document: ${escapeHtml(doc.parse_status || "pending")} · ${escapeHtml(doc.parser || "")}</div>`
+          ? `<div>${i18n.t("document_status")}: ${escapeHtml(doc.parse_status || "pending")} · ${escapeHtml(doc.parser || "")}</div>`
           : "";
         addCard(
           i18n.t("upload_success"),
@@ -4060,6 +4300,7 @@ refreshSessions();
 
 normalizeStaticText();
 initWorkspaceTabs();
+initObservabilityPanel();
 
 refreshProfile();
 renderSkillContextSnapshot(null);

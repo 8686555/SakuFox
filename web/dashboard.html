@@ -49,6 +49,10 @@
       </div>
       <div class="user-area" style="display: flex; align-items: center; gap: 12px;">
 
+        <button id="observabilityToggleBtn" class="icon-btn" type="button" data-i18n-title="observability_title" title="AI 可观测性">
+          <i class="fa-solid fa-timeline"></i>
+        </button>
+
         <label class="btn btn-outline btn-sm" style="border-radius: 20px; padding: 4px 12px; font-size: 12px; display: inline-flex; align-items: center; gap: 6px;">
           <i class="fa-solid fa-language"></i>
           <select id="langSelect" data-lang-select style="border: 0; background: transparent; color: inherit; font: inherit; font-weight: 700; outline: none; cursor: pointer;">
@@ -62,6 +66,24 @@
       </div>
 
     </header>
+
+    <div id="observabilityPanel" class="observability-panel" aria-hidden="true">
+      <div id="observabilityDragHandle" class="observability-panel-header">
+        <div>
+          <div class="observability-panel-title"><i class="fa-solid fa-timeline"></i> <span data-i18n="observability_title">AI 可观测性</span></div>
+          <div id="observabilityMeta" class="observability-panel-meta">-</div>
+        </div>
+        <button id="observabilityCloseBtn" class="icon-btn" type="button" data-i18n-title="close" title="关闭"><i class="fa-solid fa-xmark"></i></button>
+      </div>
+      <div class="observability-panel-status">
+        <span id="observabilityStatus" data-i18n="observability_idle">等待分析任务</span>
+        <span id="observabilityCount">0</span>
+      </div>
+      <div class="observability-panel-body">
+        <div id="observabilityTimeline" class="observability-timeline"></div>
+        <div id="observabilityDetail" class="observability-detail"></div>
+      </div>
+    </div>
 
 
 

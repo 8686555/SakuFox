@@ -1,4 +1,5 @@
 import html
+import inspect
 import json
 import io
 import sqlite3
@@ -6,8 +7,9 @@ import re
 import uuid
 import time
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any, Callable
 
 import pandas as pd
 from pydantic import BaseModel
@@ -286,6 +288,47 @@ class AnalysisLoopState:
     evidence_signatures: list[str] = field(default_factory=list)
 
 
+TraceSink = Callable[[dict], None]
+
+
+def _utc_timestamp() -> str:
+    return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def _sanitize_trace_payload(value: Any) -> Any:
+    from app.utils import sanitize_for_json
+
+    return sanitize_for_json(value)
+
+
+def _emit_trace(trace_sink: TraceSink | None, event_type: str, **data) -> dict:
+    event = _sanitize_trace_payload(
+        {
+            "event_id": f"trace_{uuid.uuid4().hex[:12]}",
+            "event_type": event_type,
+            "timestamp": _utc_timestamp(),
+            **data,
+        }
+    )
+    if trace_sink is not None:
+        trace_sink(event)
+    return event
+
+
+def _flush_trace_events(trace_events: list[dict], cursor: int) -> tuple[list[dict], int]:
+    if cursor >= len(trace_events):
+        return [], cursor
+    return trace_events[cursor:], len(trace_events)
+
+
+def _supports_kwarg(func, name: str) -> bool:
+    try:
+        signature = inspect.signature(func)
+    except (TypeError, ValueError):
+        return False
+    return name in signature.parameters
+
+
 def _record_loop_event(state: AnalysisLoopState, event_type: str, *, round_index: int | None = None, data: dict | None = None) -> None:
     state.events.append(AnalysisLoopEvent(type=event_type, round=round_index, data=data or {}))
 
@@ -492,6 +535,7 @@ def _iter_notebook_rounds(
     model: str | None,
     max_rounds: int,
     mode: str,
+    trace_sink: TraceSink | None = None,
 ) -> tuple[list[dict], str, str]:
     state = AnalysisLoopState(
         question=message,
@@ -517,14 +561,22 @@ def _iter_notebook_rounds(
         )
         accumulated_thought = ""
         result_data = None
-        for event in run_analysis_iteration(
-            message=round_message,
-            sandbox=analysis_sandbox,
-            iteration_history=state.loop_history,
-            business_knowledge=business_knowledge,
-            provider=provider,
-            model=model,
-        ):
+        analysis_kwargs = {
+            "message": round_message,
+            "sandbox": analysis_sandbox,
+            "iteration_history": state.loop_history,
+            "business_knowledge": business_knowledge,
+            "provider": provider,
+            "model": model,
+        }
+        if _supports_kwarg(run_analysis_iteration, "trace_callback"):
+            analysis_kwargs["trace_callback"] = lambda event: _emit_trace(
+                trace_sink,
+                str(event.get("event_type") or "llm_trace"),
+                round=round_index,
+                **{k: v for k, v in event.items() if k != "event_type"},
+            )
+        for event in run_analysis_iteration(**analysis_kwargs):
             if event.get("type") == "thought":
                 accumulated_thought += event.get("content", "")
             elif event.get("type") == "result":
@@ -580,6 +632,8 @@ def _iter_notebook_rounds(
                 selected_files=selected_files,
                 sandbox_id=sandbox_id,
                 session_id=session_id,
+                trace_sink=trace_sink,
+                round_index=round_index,
             )
             state.evidence_signatures.append(_evidence_signature(execution_result))
             _record_loop_event(
@@ -594,17 +648,25 @@ def _iter_notebook_rounds(
                     "error": execution_result.get("error"),
                 },
             )
-            reflected_result = synthesize_iteration_result(
-                message=message,
-                sandbox=analysis_sandbox,
-                iteration_history=state.loop_history,
-                business_knowledge=business_knowledge,
-                planned_result=result_data,
-                execution_result=execution_result,
-                incremental=True,
-                provider=provider,
-                model=model,
-            )
+            synthesis_kwargs = {
+                "message": message,
+                "sandbox": analysis_sandbox,
+                "iteration_history": state.loop_history,
+                "business_knowledge": business_knowledge,
+                "planned_result": result_data,
+                "execution_result": execution_result,
+                "incremental": True,
+                "provider": provider,
+                "model": model,
+            }
+            if _supports_kwarg(synthesize_iteration_result, "trace_callback"):
+                synthesis_kwargs["trace_callback"] = lambda event: _emit_trace(
+                    trace_sink,
+                    str(event.get("event_type") or "llm_trace"),
+                    round=round_index,
+                    **{k: v for k, v in event.items() if k != "event_type"},
+                )
+            reflected_result = synthesize_iteration_result(**synthesis_kwargs)
             result_data = {
                 **reflected_result,
                 "steps": result_data.get("steps", []),
@@ -659,6 +721,21 @@ def _iter_notebook_rounds(
             "execution": execution_result,
             "error": execution_result.get("error"),
         }
+        _emit_trace(
+            trace_sink,
+            "round_result",
+            round=round_index,
+            steps_count=len(result_data.get("steps") or []),
+            rows_count=len(execution_result.get("rows") or []),
+            chart_count=len(execution_result.get("chart_specs") or []),
+            stop_reason=state.stop_reason if state.stop_reason != "model_stopped_using_tools" else "",
+            result_summary={
+                "direct_answer": result_data.get("direct_answer", ""),
+                "conclusions_count": len(result_data.get("conclusions") or []),
+                "hypotheses_count": len(result_data.get("hypotheses") or []),
+                "action_items_count": len(result_data.get("action_items") or []),
+            },
+        )
         if (
             state.loop_rounds
             and _extract_execution_warnings(execution_result)
@@ -735,6 +812,7 @@ def _run_notebook_rounds(
     model: str | None,
     max_rounds: int,
     mode: str,
+    trace_sink: TraceSink | None = None,
 ) -> tuple[list[dict], str, str]:
     round_iter = _iter_notebook_rounds(
         message=message,
@@ -750,6 +828,7 @@ def _run_notebook_rounds(
         model=model,
         max_rounds=max_rounds,
         mode=mode,
+        trace_sink=trace_sink,
     )
     loop_rounds: list[dict] = []
     stop_reason = "model_stopped_using_tools"
@@ -2005,9 +2084,30 @@ def iterate(req: IterateRequest, user: User = Depends(get_current_user)):
         if config.enable_knowledge_system
         else []
     )
+    trace_events: list[dict] = []
 
     def stream_generator():
+        trace_cursor = 0
+
+        def trace_lines():
+            nonlocal trace_cursor
+            pending, trace_cursor = _flush_trace_events(trace_events, trace_cursor)
+            for event in pending:
+                yield json.dumps({"type": "trace_event", "data": event}, ensure_ascii=False) + "\n"
+
         try:
+            _emit_trace(
+                trace_events.append,
+                "run_started",
+                mode="manual",
+                session_id=session_id,
+                sandbox_id=req.sandbox_id,
+                message=message,
+                selected_tables=selected_tables,
+                selected_files=req.selected_files or [],
+                max_rounds=max_rounds,
+            )
+            yield from trace_lines()
             round_iter = _iter_notebook_rounds(
                 message=message,
                 analysis_sandbox=analysis_sandbox,
@@ -2022,6 +2122,7 @@ def iterate(req: IterateRequest, user: User = Depends(get_current_user)):
                 model=req.model,
                 max_rounds=max_rounds,
                 mode="iterate",
+                trace_sink=trace_events.append,
             )
             loop_rounds: list[dict] = []
             stop_reason = "model_stopped_using_tools"
@@ -2035,6 +2136,7 @@ def iterate(req: IterateRequest, user: User = Depends(get_current_user)):
                     break
 
                 round_index = int(round_payload.get("round", len(loop_rounds)) or len(loop_rounds))
+                yield from trace_lines()
                 yield json.dumps({
                     "type": "loop_status",
                     "data": {
@@ -2082,6 +2184,18 @@ def iterate(req: IterateRequest, user: User = Depends(get_current_user)):
                     yield json.dumps({"type": "chart_spec", "data": spec}, ensure_ascii=False) + "\n"
 
             result_rows = _get_last_result_rows(loop_rounds)
+            _emit_trace(
+                trace_events.append,
+                "run_completed",
+                mode="manual",
+                session_id=session_id,
+                sandbox_id=req.sandbox_id,
+                rounds_completed=len(loop_rounds),
+                max_rounds=max_rounds,
+                stop_reason=stop_reason,
+                result_count=len(result_rows),
+            )
+            yield from trace_lines()
             iteration_payload = {
                 "mode": "manual",
                 "message": message,
@@ -2103,6 +2217,7 @@ def iterate(req: IterateRequest, user: User = Depends(get_current_user)):
                     "rounds_completed": len(loop_rounds),
                     "max_rounds": max_rounds,
                     "max_rounds_hit": stop_reason == "max_rounds_reached",
+                    "observability_trace": list(trace_events),
                 },
             }
             iteration_id = store.append_iteration(user.user_id, session_id, iteration_payload)
@@ -2146,10 +2261,15 @@ def iterate(req: IterateRequest, user: User = Depends(get_current_user)):
 
         except RuntimeError as exc:
             localized_error = _localize_html_bundle_runtime_error(str(exc))
+            _emit_trace(trace_events.append, "error", mode="manual", message=localized_error)
+            yield from trace_lines()
             yield json.dumps({"type": "error", "message": localized_error}, ensure_ascii=False) + "\n"
         except Exception as exc:
             internal_error = t("error_internal", default="服务器内部错误")
-            yield json.dumps({"type": "error", "message": f"{internal_error}: {str(exc)}"}, ensure_ascii=False) + "\n"
+            error_message = f"{internal_error}: {str(exc)}"
+            _emit_trace(trace_events.append, "error", mode="manual", message=error_message)
+            yield from trace_lines()
+            yield json.dumps({"type": "error", "message": error_message}, ensure_ascii=False) + "\n"
 
     return StreamingResponse(stream_generator(), media_type="application/x-ndjson")
 
@@ -2215,9 +2335,31 @@ def auto_analyze(req: AutoAnalyzeRequest, user: User = Depends(get_current_user)
         if config.enable_knowledge_system
         else []
     )
+    trace_events: list[dict] = []
 
     def stream_generator():
+        trace_cursor = 0
+
+        def trace_lines():
+            nonlocal trace_cursor
+            pending, trace_cursor = _flush_trace_events(trace_events, trace_cursor)
+            for event in pending:
+                yield json.dumps({"type": "trace_event", "data": event}, ensure_ascii=False) + "\n"
+
         try:
+            _emit_trace(
+                trace_events.append,
+                "run_started",
+                mode="auto_analysis",
+                session_id=session_id,
+                sandbox_id=req.sandbox_id,
+                message=message,
+                selected_tables=selected_tables,
+                selected_files=selected_files,
+                max_rounds=max_rounds,
+                report_format=req.report_format,
+            )
+            yield from trace_lines()
             round_iter = _iter_notebook_rounds(
                 message=message,
                 analysis_sandbox=analysis_sandbox,
@@ -2232,6 +2374,7 @@ def auto_analyze(req: AutoAnalyzeRequest, user: User = Depends(get_current_user)
                 model=req.model,
                 max_rounds=max_rounds,
                 mode="auto",
+                trace_sink=trace_events.append,
             )
 
             loop_rounds: list[dict] = []
@@ -2248,6 +2391,7 @@ def auto_analyze(req: AutoAnalyzeRequest, user: User = Depends(get_current_user)
                     break
 
                 round_index = int(round_payload.get("round", 0) or 0)
+                yield from trace_lines()
                 yield json.dumps({
                     "type": "loop_status",
                     "data": {
@@ -2272,6 +2416,16 @@ def auto_analyze(req: AutoAnalyzeRequest, user: User = Depends(get_current_user)
                 yield json.dumps({"type": "loop_round", "data": round_payload}, ensure_ascii=False) + "\n"
 
             chart_specs = _collect_all_charts(loop_rounds)
+            _emit_trace(
+                trace_events.append,
+                "report_generation",
+                mode="auto_analysis",
+                stage="started",
+                report_format=req.report_format,
+                rounds_completed=len(loop_rounds),
+                chart_count=len(chart_specs),
+            )
+            yield from trace_lines()
             report_bundle = generate_auto_analysis_report_bundle(
                 message=message,
                 session_history=historical_iterations,
@@ -2286,6 +2440,11 @@ def auto_analyze(req: AutoAnalyzeRequest, user: User = Depends(get_current_user)
                 model=req.model,
                 report_format=req.report_format,
                 report_style_instruction=req.report_style_instruction,
+                trace_callback=lambda event: _emit_trace(
+                    trace_events.append,
+                    str(event.get("event_type") or "llm_trace"),
+                    **{k: v for k, v in event.items() if k != "event_type"},
+                ),
             ) or {}
             if direct_report_md:
                 report_bundle["legacy_markdown"] = direct_report_md
@@ -2293,6 +2452,17 @@ def auto_analyze(req: AutoAnalyzeRequest, user: User = Depends(get_current_user)
             report_bundle = _normalize_auto_report_bundle(report_bundle, chart_specs)
             if not report_bundle.get("html_document"):
                 raise RuntimeError("AI did not return a complete HTML document")
+            _emit_trace(
+                trace_events.append,
+                "report_generation",
+                mode="auto_analysis",
+                stage="completed",
+                report_format=req.report_format,
+                title=report_bundle.get("title", ""),
+                summary=report_bundle.get("summary", ""),
+                html_length=len(str(report_bundle.get("html_document", "") or "")),
+            )
+            yield from trace_lines()
             yield json.dumps({
                 "type": "report",
                 "data": {
@@ -2321,6 +2491,23 @@ def auto_analyze(req: AutoAnalyzeRequest, user: User = Depends(get_current_user)
                 report_format=req.report_format,
                 report_style_instruction=req.report_style_instruction,
             )
+            _emit_trace(
+                trace_events.append,
+                "run_completed",
+                mode="auto_analysis",
+                session_id=session_id,
+                sandbox_id=req.sandbox_id,
+                rounds_completed=len(loop_rounds),
+                max_rounds=max_rounds,
+                stop_reason=stop_reason,
+                result_count=len(_get_last_result_rows(loop_rounds)),
+                report_title=iteration_payload.get("report_title", ""),
+            )
+            yield from trace_lines()
+            iteration_payload["report_meta"] = {
+                **(iteration_payload.get("report_meta") or {}),
+                "observability_trace": list(trace_events),
+            }
             last_result = (loop_rounds[-1].get("result") if loop_rounds else {}) or {}
 
             iteration_id = store.append_iteration(user.user_id, session_id, iteration_payload)
@@ -2372,10 +2559,15 @@ def auto_analyze(req: AutoAnalyzeRequest, user: User = Depends(get_current_user)
             }, ensure_ascii=False) + "\n"
         except RuntimeError as exc:
             localized_error = _localize_html_bundle_runtime_error(str(exc))
+            _emit_trace(trace_events.append, "error", mode="auto_analysis", message=localized_error)
+            yield from trace_lines()
             yield json.dumps({"type": "error", "message": localized_error}, ensure_ascii=False) + "\n"
         except Exception as exc:
             internal_error = t("error_internal", default="服务端内部错误")
-            yield json.dumps({"type": "error", "message": f"{internal_error}: {str(exc)}"}, ensure_ascii=False) + "\n"
+            error_message = f"{internal_error}: {str(exc)}"
+            _emit_trace(trace_events.append, "error", mode="auto_analysis", message=error_message)
+            yield from trace_lines()
+            yield json.dumps({"type": "error", "message": error_message}, ensure_ascii=False) + "\n"
 
     return StreamingResponse(stream_generator(), media_type="application/x-ndjson")
 
@@ -3571,6 +3763,8 @@ def _execute_analysis_steps(
     sandbox_id: str,
     *,
     session_id: str,
+    trace_sink: TraceSink | None = None,
+    round_index: int | None = None,
 ) -> dict:
     kernel = create_kernel(
         session_id=session_id,
@@ -3604,8 +3798,30 @@ def _execute_analysis_steps(
         code = normalize_llm_step_code(step.get("code", ""))
         if isinstance(step, dict):
             step["code"] = code
+        started_at = time.perf_counter()
+        _emit_trace(
+            trace_sink,
+            "tool_started",
+            round=round_index,
+            step_index=i,
+            tool=tool,
+            source=source,
+            code=code,
+        )
         if not code:
-            step_results.append(_enrich_step_result({"rows": [], "tables": [], "error": t("error_empty_code", default="空代码")}))
+            enriched = _enrich_step_result({"rows": [], "tables": [], "error": t("error_empty_code", default="空代码")})
+            step_results.append(enriched)
+            _emit_trace(
+                trace_sink,
+                "tool_result",
+                round=round_index,
+                step_index=i,
+                tool=tool,
+                source=source,
+                code=code,
+                duration_ms=round((time.perf_counter() - started_at) * 1000, 2),
+                **{k: enriched.get(k) for k in ("status", "rows_count", "tables", "columns", "chart_count", "warning", "error", "result_digest")},
+            )
             continue
         if tool == "sql":
             try:
@@ -3622,14 +3838,38 @@ def _execute_analysis_steps(
                     "tables": used_tables,
                     "source": source,
                 }
-                step_results.append(_enrich_step_result(step_entry))
+                enriched = _enrich_step_result(step_entry)
+                step_results.append(enriched)
+                _emit_trace(
+                    trace_sink,
+                    "tool_result",
+                    round=round_index,
+                    step_index=i,
+                    tool=tool,
+                    source=source,
+                    code=code,
+                    duration_ms=round((time.perf_counter() - started_at) * 1000, 2),
+                    **{k: enriched.get(k) for k in ("status", "rows_count", "tables", "columns", "chart_count", "warning", "error", "result_digest")},
+                )
                 all_rows = rows
                 for table_name in used_tables:
                     if table_name not in all_tables:
                         all_tables.append(table_name)
             except Exception as exc:
                 error_msg = t("error_sql_failed", step=i + 1, default=f"SQL 执行失败 (step {i+1})") + f": {str(exc)}"
-                step_results.append(_enrich_step_result({"rows": [{"error": error_msg}], "tables": [], "source": source, "error": error_msg}))
+                enriched = _enrich_step_result({"rows": [{"error": error_msg}], "tables": [], "source": source, "error": error_msg})
+                step_results.append(enriched)
+                _emit_trace(
+                    trace_sink,
+                    "tool_result",
+                    round=round_index,
+                    step_index=i,
+                    tool=tool,
+                    source=source,
+                    code=code,
+                    duration_ms=round((time.perf_counter() - started_at) * 1000, 2),
+                    **{k: enriched.get(k) for k in ("status", "rows_count", "tables", "columns", "chart_count", "warning", "error", "result_digest")},
+                )
                 return {"step_results": step_results, "error": error_msg, "rows": all_rows, "tables": all_tables, "chart_specs": all_chart_specs, "exported_vars": exported_vars}
         elif tool == "python":
             try:
@@ -3655,15 +3895,51 @@ def _execute_analysis_steps(
                 if result_warning:
                     step_entry["warning"] = result_warning
                     warnings.append(str(result_warning))
-                step_results.append(_enrich_step_result(step_entry))
+                enriched = _enrich_step_result(step_entry)
+                step_results.append(enriched)
+                _emit_trace(
+                    trace_sink,
+                    "tool_result",
+                    round=round_index,
+                    step_index=i,
+                    tool=tool,
+                    source=source,
+                    code=code,
+                    duration_ms=round((time.perf_counter() - started_at) * 1000, 2),
+                    **{k: enriched.get(k) for k in ("status", "rows_count", "tables", "columns", "chart_count", "warning", "error", "result_digest")},
+                )
                 all_rows = result_rows
                 all_chart_specs.extend(result_charts)
             except Exception as exc:
                 error_msg = t("error_python_failed", step=i + 1, default=f"Python 执行失败 (step {i+1})") + f": {str(exc)}"
-                step_results.append(_enrich_step_result({"rows": [{"error": error_msg}], "tables": list(all_tables), "error": error_msg}))
+                enriched = _enrich_step_result({"rows": [{"error": error_msg}], "tables": list(all_tables), "error": error_msg})
+                step_results.append(enriched)
+                _emit_trace(
+                    trace_sink,
+                    "tool_result",
+                    round=round_index,
+                    step_index=i,
+                    tool=tool,
+                    source=source,
+                    code=code,
+                    duration_ms=round((time.perf_counter() - started_at) * 1000, 2),
+                    **{k: enriched.get(k) for k in ("status", "rows_count", "tables", "columns", "chart_count", "warning", "error", "result_digest")},
+                )
                 return {"step_results": step_results, "error": error_msg, "rows": all_rows, "tables": all_tables, "chart_specs": all_chart_specs, "exported_vars": exported_vars, "warnings": warnings}
         else:
-            step_results.append(_enrich_step_result({"rows": [], "tables": [], "error": t("error_unknown_tool", tool=tool, default=f"未知工具: {tool}")}))
+            enriched = _enrich_step_result({"rows": [], "tables": [], "error": t("error_unknown_tool", tool=tool, default=f"未知工具: {tool}")})
+            step_results.append(enriched)
+            _emit_trace(
+                trace_sink,
+                "tool_result",
+                round=round_index,
+                step_index=i,
+                tool=tool,
+                source=source,
+                code=code,
+                duration_ms=round((time.perf_counter() - started_at) * 1000, 2),
+                **{k: enriched.get(k) for k in ("status", "rows_count", "tables", "columns", "chart_count", "warning", "error", "result_digest")},
+            )
 
     from app.utils import sanitize_for_json
 

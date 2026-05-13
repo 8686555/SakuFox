@@ -201,3 +201,118 @@ def test_iterate_uses_post_execution_synthesis(monkeypatch):
     assert "成本最高的部门是" in final_result["direct_answer"]
     assert final_result["conclusions"][0]["text"].endswith("成本最高")
 
+
+def test_iterate_streams_and_persists_observability_trace(monkeypatch):
+    headers = _login_admin()
+
+    def fake_run_analysis_iteration(*, message, sandbox, iteration_history, business_knowledge, provider=None, model=None, trace_callback=None):
+        if trace_callback:
+            trace_callback(
+                {
+                    "event_type": "llm_request",
+                    "stage": "planner",
+                    "prompt_key": "iteration_system",
+                    "provider": provider,
+                    "model": model or "test-model",
+                    "system_prompt": "SYSTEM PROMPT SENT TO MODEL",
+                    "user_prompt": f"USER PROMPT: {message}",
+                }
+            )
+            trace_callback(
+                {
+                    "event_type": "llm_response",
+                    "stage": "planner",
+                    "prompt_key": "iteration_system",
+                    "raw_response": '{"steps":[{"tool":"sql"}]}',
+                }
+            )
+        yield {
+            "type": "result",
+            "data": {
+                "steps": [
+                    {
+                        "tool": "sql",
+                        "code": "SELECT department, SUM(cost) AS total_cost FROM tutorial_flights GROUP BY department ORDER BY total_cost DESC LIMIT 2",
+                    }
+                ],
+                "tools_used": ["execute_select_sql"],
+                "conclusions": [],
+                "hypotheses": [],
+                "action_items": [],
+                "direct_answer": "",
+                "explanation": "planner only",
+            },
+        }
+
+    def fake_synthesize_iteration_result(*, message, sandbox, iteration_history, business_knowledge, planned_result, execution_result, incremental=True, provider=None, model=None, trace_callback=None):
+        if trace_callback:
+            trace_callback(
+                {
+                    "event_type": "llm_request",
+                    "stage": "reflection",
+                    "prompt_key": "reflection_system",
+                    "provider": provider,
+                    "model": model or "test-model",
+                    "system_prompt": "REFLECTION SYSTEM PROMPT",
+                    "user_prompt": "REFLECTION USER PROMPT",
+                }
+            )
+            trace_callback(
+                {
+                    "event_type": "llm_response",
+                    "stage": "reflection",
+                    "prompt_key": "reflection_system",
+                    "raw_response": '{"direct_answer":"done"}',
+                }
+            )
+        rows = execution_result.get("rows") or []
+        return {
+            "steps": [],
+            "tools_used": [],
+            "conclusions": [{"text": "trace conclusion", "confidence": 0.9}],
+            "hypotheses": [],
+            "action_items": [],
+            "direct_answer": f"rows={len(rows)}",
+            "explanation": "reflection complete",
+            "final_report_outline": [],
+            "direct_report": "",
+            "finalize": True,
+        }
+
+    monkeypatch.setattr(main_module, "run_analysis_iteration", fake_run_analysis_iteration)
+    monkeypatch.setattr(main_module, "synthesize_iteration_result", fake_synthesize_iteration_result)
+
+    res = client.post(
+        "/api/chat/iterate",
+        headers=headers,
+        json={
+            "sandbox_id": "sb_flights_overview",
+            "message": "trace this run",
+            "provider": "openai",
+        },
+    )
+    assert res.status_code == 200
+    events = _parse_ndjson_events(res.text)
+    trace_events = [event["data"] for event in events if event["type"] == "trace_event"]
+    assert trace_events
+    llm_request = next(event for event in trace_events if event["event_type"] == "llm_request" and event["stage"] == "planner")
+    assert llm_request["system_prompt"] == "SYSTEM PROMPT SENT TO MODEL"
+    assert "trace this run" in llm_request["user_prompt"]
+
+    tool_result = next(event for event in trace_events if event["event_type"] == "tool_result")
+    assert tool_result["code"].startswith("SELECT department")
+    assert tool_result["rows_count"] > 0
+    assert "tutorial_flights" in tool_result["tables"]
+    assert tool_result["status"] == "success"
+
+    complete_event = next(event for event in events if event["type"] == "iteration_complete")
+    history_res = client.get(
+        f"/api/chat/history?session_id={complete_event['data']['session_id']}",
+        headers=headers,
+    )
+    assert history_res.status_code == 200
+    history = history_res.json()["iterations"]
+    saved_trace = history[-1]["report_meta"]["observability_trace"]
+    assert any(event["event_type"] == "llm_request" and event.get("system_prompt") == "SYSTEM PROMPT SENT TO MODEL" for event in saved_trace)
+    assert any(event["event_type"] == "run_completed" for event in saved_trace)
+

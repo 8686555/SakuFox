@@ -3,7 +3,7 @@ import json
 
 import re
 
-from typing import Generator
+from typing import Callable, Generator
 
 from pathlib import Path
 
@@ -26,6 +26,15 @@ from app.i18n import t, get_lang
 # ── Public API ────────────────────────────────────────────────────────
 
 
+TraceCallback = Callable[[dict], None]
+
+
+def _emit_trace(trace_callback: TraceCallback | None, event_type: str, **data) -> None:
+    if trace_callback is None:
+        return
+    trace_callback({"event_type": event_type, **data})
+
+
 
 
 
@@ -42,6 +51,8 @@ def run_analysis_iteration(
     provider: str | None = None,
 
     model: str | None = None,
+
+    trace_callback: TraceCallback | None = None,
 
 ) -> Generator[dict, None, None]:
 
@@ -80,6 +91,8 @@ def run_analysis_iteration(
             model=model,
 
             config=config,
+
+            trace_callback=trace_callback,
 
         )
 
@@ -658,11 +671,24 @@ def _run_iteration_by_llm(
 
     config: AppConfig,
 
+    trace_callback: TraceCallback | None = None,
+
 ) -> Generator[dict, None, None]:
 
     system_prompt = config.iteration_system_prompt
 
     user_prompt = _build_iteration_user_prompt(message, sandbox, iteration_history, business_knowledge, config=config)
+
+    _emit_trace(
+        trace_callback,
+        "llm_request",
+        stage="planner",
+        prompt_key="iteration_system",
+        provider=provider,
+        model=model or (config.openai_model if provider == "openai" else config.anthropic_model),
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+    )
 
 
 
@@ -692,6 +718,16 @@ def _run_iteration_by_llm(
 
             yield {"type": "thought", "content": chunk}
 
+
+    _emit_trace(
+        trace_callback,
+        "llm_response",
+        stage="planner",
+        prompt_key="iteration_system",
+        provider=provider,
+        model=model or (config.openai_model if provider == "openai" else config.anthropic_model),
+        raw_response=full_content,
+    )
 
 
     # Parse the final JSON
@@ -876,6 +912,7 @@ def synthesize_iteration_result(
     incremental: bool = True,
     provider: str | None = None,
     model: str | None = None,
+    trace_callback: TraceCallback | None = None,
 ) -> dict:
     config = load_config()
     selected_provider = (provider or config.llm_provider).lower()
@@ -950,12 +987,32 @@ def synthesize_iteration_result(
         report_language=report_language,
         mode_instruction=mode_instruction,
     )
+    _emit_trace(
+        trace_callback,
+        "llm_request",
+        stage="reflection",
+        prompt_key="reflection_system",
+        provider=selected_provider,
+        model=model or (config.openai_model if selected_provider == "openai" else config.anthropic_model),
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+    )
     chunks = (
         _call_openai_protocol(system_prompt=system_prompt, user_prompt=user_prompt, model=model, config=config)
         if selected_provider == "openai"
         else _call_anthropic_protocol(system_prompt=system_prompt, user_prompt=user_prompt, model=model, config=config)
     )
-    parsed = _parse_bundle_json("".join(chunks))
+    raw_response = "".join(chunks)
+    _emit_trace(
+        trace_callback,
+        "llm_response",
+        stage="reflection",
+        prompt_key="reflection_system",
+        provider=selected_provider,
+        model=model or (config.openai_model if selected_provider == "openai" else config.anthropic_model),
+        raw_response=raw_response,
+    )
+    parsed = _parse_bundle_json(raw_response)
     normalized = _normalize_iteration_payload(parsed, include_steps=False)
     normalized["goal"] = normalized.get("goal") or planned_result.get("goal", "")
     normalized["observation_focus"] = normalized.get("observation_focus") or planned_result.get("observation_focus", "")
@@ -978,6 +1035,7 @@ def generate_auto_analysis_report(
     stop_reason: str,
     provider: str | None = None,
     model: str | None = None,
+    trace_callback: TraceCallback | None = None,
 ) -> str:
     """Build a final business report from completed auto-analysis rounds."""
     config = load_config()
@@ -999,12 +1057,32 @@ def generate_auto_analysis_report(
         rounds_summary=rounds_summary,
         report_language=report_language,
     )
+    _emit_trace(
+        trace_callback,
+        "llm_request",
+        stage="auto_report_markdown",
+        prompt_key="auto_report_system",
+        provider=selected_provider,
+        model=model or (config.openai_model if selected_provider == "openai" else config.anthropic_model),
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+    )
     chunks = (
         _call_openai_protocol(system_prompt=system_prompt, user_prompt=user_prompt, model=model, config=config)
         if selected_provider == "openai"
         else _call_anthropic_protocol(system_prompt=system_prompt, user_prompt=user_prompt, model=model, config=config)
     )
-    content = "".join(chunks).strip()
+    raw_response = "".join(chunks)
+    _emit_trace(
+        trace_callback,
+        "llm_response",
+        stage="auto_report_markdown",
+        prompt_key="auto_report_system",
+        provider=selected_provider,
+        model=model or (config.openai_model if selected_provider == "openai" else config.anthropic_model),
+        raw_response=raw_response,
+    )
+    content = raw_response.strip()
     return content or _build_fallback_auto_report(message, loop_rounds, stop_reason)
 
 
@@ -1051,6 +1129,7 @@ def generate_auto_analysis_report_bundle(
     model: str | None = None,
     report_format: str = "report",
     report_style_instruction: str | None = None,
+    trace_callback: TraceCallback | None = None,
 ) -> dict:
     lang_code = get_lang()
     report_language = "English" if lang_code == "en" else "简体中文"
@@ -1066,6 +1145,7 @@ def generate_auto_analysis_report_bundle(
         stop_reason=stop_reason,
         provider=provider,
         model=model,
+        trace_callback=trace_callback,
     )
 
     config = load_config()
@@ -1158,6 +1238,7 @@ def generate_auto_analysis_report_bundle(
         stop_reason=stop_reason,
         provider=provider,
         model=model,
+        trace_callback=trace_callback,
     ).strip()
     if not stage1_markdown:
         stage1_markdown = fallback_markdown
@@ -1203,12 +1284,33 @@ def generate_auto_analysis_report_bundle(
             report_language=report_language,
             display_style_instruction=display_style_instruction,
         )
+        _emit_trace(
+            trace_callback,
+            "llm_request",
+            stage="report_generation",
+            prompt_key=system_prompt_key,
+            provider=selected_provider,
+            model=model or (config.openai_model if selected_provider == "openai" else config.anthropic_model),
+            attempt=_attempt + 1,
+            system_prompt=stage2_system_prompt,
+            user_prompt=stage2_user_prompt,
+        )
         stage2_chunks = (
             _call_openai_protocol(system_prompt=stage2_system_prompt, user_prompt=stage2_user_prompt, model=model, config=config)
             if selected_provider == "openai"
             else _call_anthropic_protocol(system_prompt=stage2_system_prompt, user_prompt=stage2_user_prompt, model=model, config=config)
         )
         stage2_raw = "".join(stage2_chunks).strip()
+        _emit_trace(
+            trace_callback,
+            "llm_response",
+            stage="report_generation",
+            prompt_key=system_prompt_key,
+            provider=selected_provider,
+            model=model or (config.openai_model if selected_provider == "openai" else config.anthropic_model),
+            attempt=_attempt + 1,
+            raw_response=stage2_raw,
+        )
         stage2_parsed = _parse_report_bundle_json_strict(stage2_raw) or {}
         html_document, last_error = _extract_qualified_html_document(stage2_raw, parsed=stage2_parsed)
         if html_document:
