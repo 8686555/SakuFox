@@ -46,5 +46,10 @@ def test_config_fields_match_between_config_and_example():
     for name in ("ENABLE_AUTH_SYSTEM", "ENABLE_KNOWLEDGE_SYSTEM"):
         assert hasattr(config, name)
         assert hasattr(example_config, name)
-        assert getattr(config, name) is False
-        assert getattr(example_config, name) is False
+    assert config.ENABLE_AUTH_SYSTEM is True
+    assert example_config.ENABLE_AUTH_SYSTEM is True
+    assert config.ENABLE_KNOWLEDGE_SYSTEM is False
+    assert example_config.ENABLE_KNOWLEDGE_SYSTEM is False
+    for name in ("AUTH_ALLOW_SELF_REGISTRATION", "AUTH_LOCAL_DEFAULT_ROLES", "AUTH_LOCAL_DEFAULT_GROUPS"):
+        assert hasattr(config, name)
+        assert hasattr(example_config, name)

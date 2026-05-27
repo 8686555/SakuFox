@@ -23,7 +23,7 @@ ANALYSIS_MAX_ROUNDS_LIMIT = 100
 DOCUMENT_PARSER = "mineru_local"
 MINERU_COMMAND = "mineru"
 DOCUMENT_PARSE_TIMEOUT_SECONDS = 120
-ENABLE_AUTH_SYSTEM = False
+ENABLE_AUTH_SYSTEM = True
 ENABLE_KNOWLEDGE_SYSTEM = False
 
 # --- Database Configuration ---
@@ -32,8 +32,11 @@ DEFAULT_DB_URL = "sqlite:///./sakufox.db"
 DB_CONNECTION_SECRET_KEY = "replace-with-your-secret-key"
 
 # --- Authentication / Authorization ---
-# AUTH_TYPE can be mock, ldap, oauth, or hybrid. Use mock only for local tests.
-AUTH_TYPE = "mock"
+# AUTH_TYPE can be local, mock, ldap, oauth, or hybrid. Use local for open self-registration.
+AUTH_TYPE = "local"
+AUTH_ALLOW_SELF_REGISTRATION = True
+AUTH_LOCAL_DEFAULT_ROLES = ["Admin"]
+AUTH_LOCAL_DEFAULT_GROUPS = ["admin", "finance", "marketing", "data"]
 AUTH_SESSION_TTL_SECONDS = 60 * 60 * 12
 AUTH_COOKIE_NAME = "sakufox_session"
 AUTH_COOKIE_SECURE = False
@@ -980,6 +983,9 @@ class AppConfig:
     db_url: str
     db_connection_secret_key: str
     auth_type: str
+    auth_allow_self_registration: bool
+    auth_local_default_roles: list[str]
+    auth_local_default_groups: list[str]
     auth_session_ttl_seconds: int
     auth_cookie_name: str
     auth_cookie_secure: bool
@@ -1105,6 +1111,22 @@ def load_config() -> AppConfig:
         db_url=_pick(os.getenv("DB_URL", ""), dotenv.get("DB_URL", ""), DEFAULT_DB_URL),
         db_connection_secret_key=DB_CONNECTION_SECRET_KEY,
         auth_type=_pick(os.getenv("AUTH_TYPE", ""), dotenv.get("AUTH_TYPE", ""), AUTH_TYPE, default="mock").lower(),
+        auth_allow_self_registration=_pick_bool(
+            os.getenv("AUTH_ALLOW_SELF_REGISTRATION", ""),
+            dotenv.get("AUTH_ALLOW_SELF_REGISTRATION", ""),
+            str(AUTH_ALLOW_SELF_REGISTRATION),
+            default=AUTH_ALLOW_SELF_REGISTRATION,
+        ),
+        auth_local_default_roles=_pick_json(
+            AUTH_LOCAL_DEFAULT_ROLES,
+            os.getenv("AUTH_LOCAL_DEFAULT_ROLES", ""),
+            dotenv.get("AUTH_LOCAL_DEFAULT_ROLES", ""),
+        ),
+        auth_local_default_groups=_pick_json(
+            AUTH_LOCAL_DEFAULT_GROUPS,
+            os.getenv("AUTH_LOCAL_DEFAULT_GROUPS", ""),
+            dotenv.get("AUTH_LOCAL_DEFAULT_GROUPS", ""),
+        ),
         auth_session_ttl_seconds=_pick_int(os.getenv("AUTH_SESSION_TTL_SECONDS", ""), dotenv.get("AUTH_SESSION_TTL_SECONDS", ""), str(AUTH_SESSION_TTL_SECONDS), default=AUTH_SESSION_TTL_SECONDS),
         auth_cookie_name=_pick(os.getenv("AUTH_COOKIE_NAME", ""), dotenv.get("AUTH_COOKIE_NAME", ""), AUTH_COOKIE_NAME, default="sakufox_session"),
         auth_cookie_secure=_pick_bool(os.getenv("AUTH_COOKIE_SECURE", ""), dotenv.get("AUTH_COOKIE_SECURE", ""), str(AUTH_COOKIE_SECURE), default=AUTH_COOKIE_SECURE),

@@ -1,5 +1,7 @@
 import base64
 import hashlib
+import hmac
+import os
 import re
 import time
 import uuid
@@ -9,6 +11,7 @@ import httpx
 from fastapi import Header, HTTPException, Request
 
 from app.config import load_config
+from app.i18n import t
 from app.store import User, store
 
 
@@ -34,6 +37,8 @@ class AuthManager:
         oauth_providers = self.config.oauth_providers or {}
         return {
             "auth_type": auth_type,
+            "local": auth_type == "local",
+            "registration": auth_type == "local" and self.config.auth_allow_self_registration,
             "ldap": auth_type in {"mock", "ldap", "hybrid"},
             "oauth": [
                 {"name": name, "label": provider.get("label") or name}
@@ -46,6 +51,50 @@ class AuthManager:
     def issue_login(self, user: User) -> tuple[str, User]:
         token = store.issue_token(user)
         return token, user
+
+    def login_with_local(self, username: str | None, password: str | None = None) -> tuple[str, User]:
+        self.refresh_config()
+        if self.config.auth_type != "local":
+            raise HTTPException(status_code=400, detail=t("error_local_login_disabled", default="本地账号登录未启用"))
+        record = store.get_auth_user_record(username or "")
+        if not record or not record.get("is_active") or not self._verify_password(password or "", record.get("password_hash") or ""):
+            raise HTTPException(status_code=401, detail=t("error_invalid_local_login", default="用户名或密码错误"))
+        return self.issue_login(
+            store.upsert_auth_user(
+                user_id=record.get("user_id"),
+                username=record["username"],
+                display_name=record.get("display_name") or record["username"],
+                email=record.get("email") or "",
+                provider="local",
+                groups=self._local_default_groups(),
+                roles=self._local_default_roles(),
+                external_id=record.get("external_id") or f"local:{record['username']}",
+            )
+        )
+
+    def register_local(self, username: str | None, password: str | None = None, display_name: str | None = None) -> tuple[str, User]:
+        self.refresh_config()
+        if self.config.auth_type != "local":
+            raise HTTPException(status_code=400, detail=t("error_local_registration_disabled", default="本地账号注册未启用"))
+        if not self.config.auth_allow_self_registration:
+            raise HTTPException(status_code=403, detail=t("error_self_registration_disabled", default="当前不允许自助注册"))
+        normalized_username = str(username or "").strip()
+        if not re.fullmatch(r"[A-Za-z0-9_.@-]{2,80}", normalized_username):
+            raise HTTPException(status_code=400, detail=t("error_invalid_username", default="用户名需为 2-80 位字母、数字或 ._@-"))
+        if len(password or "") < 6:
+            raise HTTPException(status_code=400, detail=t("error_password_too_short", default="密码至少需要 6 位"))
+        if store.get_auth_user_record(normalized_username):
+            raise HTTPException(status_code=409, detail=t("error_username_exists", default="用户名已存在"))
+        user = store.upsert_auth_user(
+            username=normalized_username,
+            display_name=(display_name or normalized_username).strip() or normalized_username,
+            provider="local",
+            groups=self._local_default_groups(),
+            roles=self._local_default_roles(),
+            external_id=f"local:{normalized_username}",
+            password_hash=self._hash_password(password or ""),
+        )
+        return self.issue_login(user)
 
     def login_with_ldap(self, username: str | None, password: str | None = None) -> tuple[str, User]:
         self.refresh_config()
@@ -183,6 +232,37 @@ class AuthManager:
             external_id=f"{provider}:{username}",
         )
 
+    def _local_default_roles(self) -> list[str]:
+        roles = [str(item).strip() for item in (self.config.auth_local_default_roles or []) if str(item).strip()]
+        return roles or ["Admin"]
+
+    def _local_default_groups(self) -> list[str]:
+        groups = [str(item).strip() for item in (self.config.auth_local_default_groups or []) if str(item).strip()]
+        return groups or ["admin", "finance", "marketing", "data"]
+
+    def _hash_password(self, password: str) -> str:
+        iterations = 260000
+        salt = os.urandom(16)
+        digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, iterations)
+        return "pbkdf2_sha256${}${}${}".format(
+            iterations,
+            base64.urlsafe_b64encode(salt).decode("ascii").rstrip("="),
+            base64.urlsafe_b64encode(digest).decode("ascii").rstrip("="),
+        )
+
+    def _verify_password(self, password: str, stored_hash: str) -> bool:
+        try:
+            algorithm, iterations_text, salt_text, digest_text = str(stored_hash or "").split("$", 3)
+            if algorithm != "pbkdf2_sha256":
+                return False
+            iterations = int(iterations_text)
+            salt = base64.urlsafe_b64decode(salt_text + "=" * (-len(salt_text) % 4))
+            expected = base64.urlsafe_b64decode(digest_text + "=" * (-len(digest_text) % 4))
+            actual = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, iterations)
+            return hmac.compare_digest(actual, expected)
+        except Exception:
+            return False
+
     def _ldap_authenticate(self, *, username: str, password: str) -> User:
         if not self.config.ldap_server_uri or not self.config.ldap_search_base:
             raise HTTPException(status_code=500, detail="LDAP is not configured")
@@ -311,6 +391,14 @@ auth_manager = AuthManager()
 
 def login_with_ldap(username: str | None, password: str | None = None) -> tuple[str, User]:
     return auth_manager.login_with_ldap(username, password)
+
+
+def login_with_local(username: str | None, password: str | None = None) -> tuple[str, User]:
+    return auth_manager.login_with_local(username, password)
+
+
+def register_local(username: str | None, password: str | None = None, display_name: str | None = None) -> tuple[str, User]:
+    return auth_manager.register_local(username, password, display_name)
 
 
 def login_with_oauth(oauth_token: str | None, provider_name: str | None = None) -> tuple[str, User]:

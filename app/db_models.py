@@ -11,6 +11,7 @@ class DBUser(Base):
     display_name = Column(String(100))
     email = Column(String(255), nullable=True)
     external_id = Column(String(255), nullable=True, index=True)
+    password_hash = Column(String(255), nullable=True)
     groups = Column(JSON)  # list[str]
     roles = Column(JSON)  # list[str]
     provider = Column(String(20))

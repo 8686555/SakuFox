@@ -345,6 +345,11 @@ def _upsert_skill_asset(store: Any, skill: dict) -> str | None:
     content_hash = _hash_text(content)
     layers = skill.get("layers") or {}
     sandbox_id = str(((layers.get("context_snapshot") or {}).get("source") or {}).get("sandbox_id") or "").strip() or None
+    visibility = str(layers.get("visibility") or "").strip().lower()
+    shared = visibility == "shared" or bool(layers.get("shared"))
+    permissions = [] if shared else ["__private__"]
+    if not visibility and not shared:
+        permissions = list(layers.get("groups") or skill.get("groups") or [])
     asset_id = _upsert_asset_record(
         store,
         asset_type="experience",
@@ -355,11 +360,11 @@ def _upsert_skill_asset(store: Any, skill: dict) -> str | None:
         source_path="",
         sandbox_id=sandbox_id,
         owner_id=str(skill.get("owner_id") or "").strip() or None,
-        permissions=list(layers.get("groups") or skill.get("groups") or []),
+        permissions=permissions,
         content_type="text/markdown",
         content_preview=_preview(content),
         content_hash=content_hash,
-        metadata_json={"version": skill.get("version"), "tags": skill.get("tags") or []},
+        metadata_json={"version": skill.get("version"), "tags": skill.get("tags") or [], "visibility": "shared" if shared else "private"},
     )
     _replace_asset_chunks(store, asset_id=asset_id, chunks=_chunk_text(content), source_ref=str(skill.get("skill_id") or "").strip(), source_path="", content_hash=content_hash)
     return asset_id
@@ -486,6 +491,8 @@ def _can_user_view_asset(store: Any, asset: dict, user_id: str, user_groups: lis
     if asset_type == "experience":
         owner_id = str(asset.get("owner_id") or "").strip()
         permissions = set(asset.get("permissions") or [])
+        if "__private__" in permissions:
+            return owner_id == user_id
         return owner_id == user_id or not permissions or bool(permissions.intersection(user_groups))
     return True
 

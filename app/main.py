@@ -30,7 +30,7 @@ from app.agent import (
     generate_skill_proposal,
     summarize_session_history_as_html,
 )
-from app.auth import auth_manager, get_current_user, login_with_ldap, login_with_oauth
+from app.auth import auth_manager, get_current_user, login_with_ldap, login_with_local, login_with_oauth, register_local
 from app.authorization import (
     assert_sandbox_access,
     get_accessible_sandboxes,
@@ -45,6 +45,7 @@ from app.models import (
     AutoAnalyzeRequest,
     IterateRequest,
     LoginRequest,
+    RegisterRequest,
     SaveSkillRequest,
     UpdateSessionRequest,
     ProposeSkillRequest,
@@ -71,7 +72,7 @@ from app.models import (
 )
 from app.notebook_kernel import create_kernel, destroy_kernel
 from app.python_sandbox import run_python_pipeline
-from app.skills import list_skills, save_skill_from_proposal, build_context_snapshot_for_proposal
+from app.skills import can_view_skill, list_skills, save_skill_from_proposal, build_context_snapshot_for_proposal
 from app.tools import execute_select_sql_with_mask
 from app.sql_guard import enforce_select_only, enforce_table_whitelist, extract_tables
 from app.store import User, store
@@ -1938,7 +1939,9 @@ def _build_session_summary_iteration_payload(
 def login(req: LoginRequest, response: Response):
     if not load_config().enable_auth_system:
         raise HTTPException(status_code=404, detail="Authentication system is disabled")
-    if req.provider == "ldap":
+    if req.provider == "local":
+        token, user = login_with_local(req.username, req.password)
+    elif req.provider == "ldap":
         token, user = login_with_ldap(req.username, req.password)
     else:
         token, user = login_with_oauth(req.oauth_token, req.oauth_provider)
@@ -1949,6 +1952,23 @@ def login(req: LoginRequest, response: Response):
         secure=load_config().auth_cookie_secure,
         samesite="lax",
         max_age=load_config().auth_session_ttl_seconds,
+    )
+    return {"token": token, "user": user.__dict__}
+
+
+@app.post("/api/auth/register")
+def register(req: RegisterRequest, response: Response):
+    if not load_config().enable_auth_system:
+        raise HTTPException(status_code=404, detail="Authentication system is disabled")
+    token, user = register_local(req.username, req.password, req.display_name)
+    cfg = load_config()
+    response.set_cookie(
+        key=cfg.auth_cookie_name,
+        value=token,
+        httponly=True,
+        secure=cfg.auth_cookie_secure,
+        samesite="lax",
+        max_age=cfg.auth_session_ttl_seconds,
     )
     return {"token": token, "user": user.__dict__}
 
@@ -3048,6 +3068,7 @@ def save_skill(req: SaveSkillRequest, user: User = Depends(get_current_user)):
             table_descriptions=req.table_descriptions,
             session_id=session_id,
             overwrite_skill_id=req.overwrite_skill_id,
+            shared=req.shared,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -3118,7 +3139,7 @@ def get_skill(skill_id: str, user: User = Depends(get_current_user)):
     skill = store.skills.get(skill_id)
     if not skill:
         raise HTTPException(status_code=404, detail=t("error_skill_not_found"))
-    if skill["owner_id"] != user.user_id and not set(skill["groups"]).intersection(user.groups):
+    if not can_view_skill(user, {"skill_id": skill_id, **skill}):
         raise HTTPException(status_code=403, detail=t("error_no_permission_skill"))
     return {"skill_id": skill_id, **skill}
 
@@ -3142,12 +3163,15 @@ def update_skill(skill_id: str, req: UpdateSkillRequest, user: User = Depends(ge
         
     # We need to deep copy the layers since mutating dict elements directly is complicated
     # But since we have the existing skill, we'll extract its layers to modify
-    if req.knowledge is not None or req.table_descriptions is not None:
+    if req.knowledge is not None or req.table_descriptions is not None or req.shared is not None:
         layers = dict(skill.get("layers") or {})
         if req.knowledge is not None:
             layers["knowledge"] = req.knowledge
         if req.table_descriptions is not None:
             layers["tables"] = req.table_descriptions
+        if req.shared is not None:
+            layers["visibility"] = "shared" if req.shared else "private"
+            layers["shared"] = bool(req.shared)
         updates["layers"] = layers
 
     if updates:
@@ -4188,7 +4212,7 @@ def publish_experience(req: PublishExperienceRequest, user: User = Depends(get_c
     skill = store.skills.get(req.skill_id)
     if not skill:
         raise HTTPException(status_code=404, detail=t("error_skill_not_found"))
-    if skill["owner_id"] != user.user_id and not set(skill.get("groups") or []).intersection(user.groups):
+    if skill["owner_id"] != user.user_id:
         raise HTTPException(status_code=403, detail=t("error_no_permission_skill"))
     try:
         asset = store.publish_experience_asset(skill_id=req.skill_id, name=req.name, description=req.description)
@@ -4229,6 +4253,7 @@ def publish_experience_from_proposal(req: PublishExperienceFromProposalRequest, 
             extra_knowledge=req.knowledge,
             table_descriptions=req.table_descriptions,
             session_id=str(proposal.get("session_id") or "").strip() or None,
+            shared=True,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))

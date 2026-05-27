@@ -595,7 +595,7 @@ last_error: ${escapeHtml(asset.last_error || "")}</div>
       api("/api/knowledge/wiki/pages?status=published"),
       api("/api/knowledge/wiki/review-items?status=pending"),
     ]);
-    userInfo.textContent = `${me.user.display_name} (${(me.user.groups || []).join(", ")})`;
+    userInfo.textContent = me.user.username || me.user.display_name || "";
     state.assets = assetRes.assets || [];
     state.sandboxes = sandboxRes.sandboxes || [];
     state.pendingExperiences = pendingRes.pending_experiences || [];

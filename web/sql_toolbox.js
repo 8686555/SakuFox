@@ -445,7 +445,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   try {
     const me = await api("/api/me");
     if (typeof setAppFeatures === "function") setAppFeatures(me.features || {});
-    userInfo.textContent = `${me.user.display_name} (${me.user.groups.join(", ")})`;
+    userInfo.textContent = me.user.username || me.user.display_name || "";
   } catch (err) {
     if (window.APP_FEATURES?.auth_system !== false) window.location.href = "/web/login.html";
     return;

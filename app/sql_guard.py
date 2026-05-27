@@ -44,6 +44,72 @@ def _normalize_identifier(name: str) -> str:
     return text.lower()
 
 
+def _extract_cte_names_fallback(sql: str) -> set[str]:
+    text = str(sql or "")
+    if not re.match(r"^\s*with\b", text, re.I):
+        return set()
+
+    length = len(text)
+    index = 0
+    cte_names: set[str] = set()
+
+    with_match = re.match(r"^\s*with\b", text, re.I)
+    if not with_match:
+        return cte_names
+    index = with_match.end()
+
+    recursive_match = re.match(r"\s*recursive\b", text[index:], re.I)
+    if recursive_match:
+        index += recursive_match.end()
+
+    while index < length:
+        while index < length and text[index].isspace():
+            index += 1
+
+        name_match = re.match(r"([a-zA-Z_][a-zA-Z0-9_]*)", text[index:])
+        if not name_match:
+            break
+        alias = _normalize_identifier(name_match.group(1))
+        index += name_match.end()
+
+        while index < length and text[index].isspace():
+            index += 1
+
+        as_match = re.match(r"as\b", text[index:], re.I)
+        if not as_match:
+            break
+        index += as_match.end()
+
+        while index < length and text[index].isspace():
+            index += 1
+
+        if index >= length or text[index] != "(":
+            break
+
+        cte_names.add(alias)
+        depth = 0
+        while index < length:
+            char = text[index]
+            if char == "(":
+                depth += 1
+            elif char == ")":
+                depth -= 1
+                if depth == 0:
+                    index += 1
+                    break
+            index += 1
+
+        while index < length and text[index].isspace():
+            index += 1
+
+        if index < length and text[index] == ",":
+            index += 1
+            continue
+        break
+
+    return cte_names
+
+
 def _table_identifier(table) -> str:
     if not _HAS_SQLGLOT:
         return ""
@@ -104,10 +170,13 @@ def _assert_read_only_select(statement) -> None:
 def extract_tables(sql: str) -> list[str]:
     statement = _parse_single_statement(sql)
     if not _HAS_SQLGLOT:
+        cte_names = _extract_cte_names_fallback(str(statement))
         tables: list[str] = []
         seen: set[str] = set()
         for match in TABLE_PATTERN.finditer(str(statement)):
             identifier = _normalize_identifier(match.group(1))
+            if identifier in cte_names or identifier.split(".")[-1] in cte_names:
+                continue
             if identifier and identifier not in seen:
                 seen.add(identifier)
                 tables.append(identifier)

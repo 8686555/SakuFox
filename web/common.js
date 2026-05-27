@@ -186,7 +186,24 @@ const ZH_FALLBACK = {
   columns: "\u5217",
   no_data: "\u6682\u65e0\u6570\u636e",
   collapse: "\u6298\u53e0",
-  request_failed: "\u8bf7\u6c42\u5931\u8d25"
+  request_failed: "\u8bf7\u6c42\u5931\u8d25",
+  login_title: "SakuFox \u767b\u5f55",
+  login_subtitle: "\u6ce8\u518c\u6216\u767b\u5f55\u540e\u5f00\u59cb\u5171\u4eab\u5206\u6790\u7ecf\u9a8c",
+  login_mode_signin: "\u767b\u5f55",
+  login_mode_register: "\u6ce8\u518c",
+  login_username: "\u7528\u6237\u540d",
+  login_password: "\u5bc6\u7801",
+  login_display_name: "\u663e\u793a\u540d\u79f0\uff08\u53ef\u9009\uff09",
+  login_submit: "\u767b\u5f55",
+  login_register_submit: "\u6ce8\u518c\u5e76\u767b\u5f55",
+  login_local_disabled: "\u672c\u5730\u8d26\u53f7\u767b\u5f55\u672a\u542f\u7528\u3002",
+  login_provider_failed: "\u8ba4\u8bc1\u914d\u7f6e\u52a0\u8f7d\u5931\u8d25\u3002",
+  login_registering: "\u6b63\u5728\u6ce8\u518c...",
+  login_signing_in: "\u6b63\u5728\u767b\u5f55...",
+  login_failed: "\u767b\u5f55\u5931\u8d25",
+  skill_shared_label: "\u516c\u5f00\u5206\u4eab\u7ed9\u5176\u4ed6\u7528\u6237",
+  skill_shared_hint: "\u516c\u5f00\u540e\uff0c\u5176\u4ed6\u767b\u5f55\u7528\u6237\u53ef\u67e5\u770b\u3001\u6302\u8f7d\u5e76\u5728\u7ecf\u9a8c\u68c0\u7d22\u4e2d\u590d\u7528\u3002",
+  skill_shared_badge: "\u516c\u5f00"
 };
 
 const i18n = {

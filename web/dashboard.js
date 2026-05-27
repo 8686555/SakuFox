@@ -12,6 +12,7 @@ let uploadedFiles = [];
 let currentEditingSkillId = ""; // skill being edited, or "" for create mode
 let pendingSkillDraft = null;
 let isSavingSkill = false;
+let currentUserId = "";
 
 let skillModal = null; // Global reference for the skill detail modal
 let skillSourceSessionId = "";
@@ -655,7 +656,8 @@ async function refreshProfile(selectId = null) {
 
     if (typeof setAppFeatures === "function") setAppFeatures(me.features || {});
 
-    userInfo.textContent = `${me.user.display_name} (${me.user.groups.join(", ")})`;
+    currentUserId = me.user.user_id || "";
+    userInfo.textContent = me.user.username || me.user.display_name || "";
 
 
 
@@ -1014,6 +1016,8 @@ async function refreshSkills() {
   } else {
 
     skills.skills.forEach((s) => {
+      const isOwner = !currentUserId || s.owner_id === currentUserId;
+      const isShared = s.layers?.visibility === "shared" || !!s.layers?.shared;
 
       const li = document.createElement("li");
 
@@ -1030,11 +1034,12 @@ async function refreshSkills() {
           ${s.version ? `<span class="badge" style="font-size:10px; padding:2px 4px; border-radius:4px; border:none; background:#e0e7ff; color:#4f46e5; margin-left:6px;">v${s.version}</span>` : ''}
 
           ${mountedSkillIds.has(s.skill_id) ? `<span class="badge" style="font-size:10px; padding:2px 6px; border-radius:999px; border:none; background:#dcfce7; color:#166534; margin-left:6px;">${i18n.t('mounted_skill') || '已挂载'}</span>` : ''}
-          <div class="delete-btn-round delete-icon" title="${i18n.t('delete')}">
+          ${isShared ? `<span class="badge" style="font-size:10px; padding:2px 6px; border-radius:999px; border:none; background:#dbeafe; color:#1d4ed8; margin-left:6px;">${i18n.t('skill_shared_badge') || '公开'}</span>` : ''}
+          ${isOwner ? `<div class="delete-btn-round delete-icon" title="${i18n.t('delete')}">
 
             <i class="fa-solid fa-xmark"></i>
 
-          </div>
+          </div>` : ''}
 
         </div>
 
@@ -1054,7 +1059,7 @@ async function refreshSkills() {
 
       const deleteBtn = li.querySelector(".delete-icon");
 
-      deleteBtn.onclick = async (e) => {
+      if (deleteBtn) deleteBtn.onclick = async (e) => {
 
         e.stopPropagation();
 
@@ -1092,6 +1097,7 @@ async function refreshSkills() {
 function loadSkillIntoForm(skillId, skill) {
   currentEditingSkillId = skillId;
   pendingSkillDraft = null;
+  const isOwner = !currentUserId || skill.owner_id === currentUserId;
 
 
 
@@ -1113,6 +1119,9 @@ function loadSkillIntoForm(skillId, skill) {
 
   if (document.getElementById("skillTagsInput")) document.getElementById("skillTagsInput").value = (skill.tags || []).join(", ");
 
+  const sharedInput = document.getElementById("skillSharedInput");
+  if (sharedInput) sharedInput.checked = skill.layers?.visibility === "shared" || !!skill.layers?.shared;
+
   // Knowledge from layers.knowledge
 
   const knowledge = (skill.layers?.knowledge || []).join("\n");
@@ -1129,6 +1138,8 @@ function loadSkillIntoForm(skillId, skill) {
   btn.innerHTML = `<i class="fa-solid fa-pen-to-square"></i> ${i18n.t('update_skill')}`;
 
   btn.style.borderColor = "var(--accent, #6366f1)";
+  btn.style.display = isOwner ? "" : "none";
+  setSkillFormReadOnly(!isOwner);
 
 
 
@@ -1159,7 +1170,7 @@ function loadSkillIntoForm(skillId, skill) {
 
   // No need to scroll as it's a modal now
 
-  document.getElementById("skillNameInput").focus();
+  if (isOwner) document.getElementById("skillNameInput").focus();
 
 }
 
@@ -1176,6 +1187,13 @@ function setSkillSaveButtonMode(mode) {
   }
 }
 
+function setSkillFormReadOnly(readOnly) {
+  ["skillNameInput", "skillDescInput", "skillTagsInput", "skillKnowledgeInput", "skillSharedInput"].forEach((id) => {
+    const el = document.getElementById(id);
+    if (el) el.disabled = !!readOnly;
+  });
+}
+
 function setSkillFormValues(draft) {
   document.getElementById("skillNameInput").value = draft.name || "";
   if (document.getElementById("skillDescInput")) document.getElementById("skillDescInput").value = draft.description || "";
@@ -1183,6 +1201,9 @@ function setSkillFormValues(draft) {
   if (document.getElementById("skillKnowledgeInput")) {
     document.getElementById("skillKnowledgeInput").value = Array.isArray(draft.knowledge) ? draft.knowledge.join("\n") : (draft.knowledge || "");
   }
+  const sharedInput = document.getElementById("skillSharedInput");
+  if (sharedInput) sharedInput.checked = !!draft.shared;
+  setSkillFormReadOnly(false);
   renderSkillContextSnapshot(draft.context_snapshot || null);
 }
 
@@ -1191,6 +1212,9 @@ function clearSkillForm() {
   if (document.getElementById("skillDescInput")) document.getElementById("skillDescInput").value = "";
   if (document.getElementById("skillTagsInput")) document.getElementById("skillTagsInput").value = "";
   if (document.getElementById("skillKnowledgeInput")) document.getElementById("skillKnowledgeInput").value = "";
+  const sharedInput = document.getElementById("skillSharedInput");
+  if (sharedInput) sharedInput.checked = false;
+  setSkillFormReadOnly(false);
   renderSkillContextSnapshot(null);
 }
 
@@ -1203,6 +1227,8 @@ function openPendingSkillDraft() {
   setSkillSaveButtonMode("create");
   const cancelLink = document.getElementById("skillEditCancelLink");
   if (cancelLink) cancelLink.style.display = "none";
+  const saveBtn = document.getElementById("saveSkillBtn");
+  if (saveBtn) saveBtn.style.display = "";
   if (skillModal) skillModal.style.display = "flex";
 }
 
@@ -1214,6 +1240,8 @@ function cancelSkillEdit() {
 
   clearSkillForm();
   setSkillSaveButtonMode("create");
+  const saveBtn = document.getElementById("saveSkillBtn");
+  if (saveBtn) saveBtn.style.display = "";
   const cancelLink = document.getElementById("skillEditCancelLink");
   if (cancelLink) cancelLink.style.display = "none";
 
@@ -3149,6 +3177,7 @@ document.getElementById("saveSkillBtn").onclick = async () => {
     const knowledgeRaw = document.getElementById("skillKnowledgeInput")?.value.trim() || "";
 
     const knowledge = knowledgeRaw ? knowledgeRaw.split("\n").map(l => l.trim()).filter(Boolean) : [];
+    const shared = !!document.getElementById("skillSharedInput")?.checked;
 
     const btn = document.getElementById("saveSkillBtn");
     isSavingSkill = true;
@@ -3166,7 +3195,7 @@ document.getElementById("saveSkillBtn").onclick = async () => {
 
         method: "PATCH",
 
-        body: JSON.stringify({ name, description: desc, tags, knowledge }),
+        body: JSON.stringify({ name, description: desc, tags, knowledge, shared }),
 
       });
 
@@ -3203,7 +3232,9 @@ document.getElementById("saveSkillBtn").onclick = async () => {
 
           knowledge,
 
-          overwrite_skill_id: overwriteId || null
+          overwrite_skill_id: overwriteId || null,
+
+          shared
 
         }),
 

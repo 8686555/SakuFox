@@ -172,7 +172,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       api("/api/knowledge/index/jobs"),
       api("/api/sandboxes"),
     ]);
-    userInfo.textContent = `${me.user.display_name} (${(me.user.groups || []).join(", ")})`;
+    userInfo.textContent = me.user.username || me.user.display_name || "";
     renderOverview(overview);
     state.assets = assetsRes.assets || [];
     indexAssetViewport.scrollTop = 0;

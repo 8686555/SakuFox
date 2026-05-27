@@ -15,8 +15,9 @@ def _parse_ndjson_events(response_text: str) -> list[dict]:
     return [json.loads(line) for line in response_text.splitlines() if line.strip()]
 
 
-def test_default_auth_disabled_allows_anonymous_core_access(monkeypatch):
-    monkeypatch.delenv("ENABLE_AUTH_SYSTEM", raising=False)
+def test_auth_disabled_allows_anonymous_core_access(monkeypatch):
+    monkeypatch.setenv("ENABLE_AUTH_SYSTEM", "false")
+    monkeypatch.delenv("AUTH_TYPE", raising=False)
     monkeypatch.delenv("ENABLE_KNOWLEDGE_SYSTEM", raising=False)
 
     me = client.get("/api/me")
@@ -32,7 +33,7 @@ def test_default_auth_disabled_allows_anonymous_core_access(monkeypatch):
 
 
 def test_auth_disabled_lists_legacy_skills_without_groups(monkeypatch):
-    monkeypatch.delenv("ENABLE_AUTH_SYSTEM", raising=False)
+    monkeypatch.setenv("ENABLE_AUTH_SYSTEM", "false")
 
     class FakeStore:
         skills = {
@@ -83,7 +84,7 @@ def test_default_knowledge_disabled_blocks_pages_and_api(monkeypatch):
 
 
 def test_analysis_does_not_query_knowledge_when_disabled(monkeypatch):
-    monkeypatch.delenv("ENABLE_AUTH_SYSTEM", raising=False)
+    monkeypatch.setenv("ENABLE_AUTH_SYSTEM", "false")
     monkeypatch.delenv("ENABLE_KNOWLEDGE_SYSTEM", raising=False)
 
     def fail_search(*args, **kwargs):

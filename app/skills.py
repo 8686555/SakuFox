@@ -17,6 +17,23 @@ def _dedupe_non_empty(values: list[str]) -> list[str]:
     return output
 
 
+def is_skill_shared(skill: dict) -> bool:
+    layers = skill.get("layers") or {}
+    return str(layers.get("visibility") or "").strip().lower() == "shared" or bool(layers.get("shared"))
+
+
+def can_view_skill(user: User, skill: dict) -> bool:
+    if skill.get("owner_id") == user.user_id:
+        return True
+    if is_skill_shared(skill):
+        return True
+    layers = skill.get("layers") or {}
+    if layers.get("visibility"):
+        return False
+    groups = skill.get("groups") or layers.get("groups") or []
+    return bool(set(groups).intersection(user.groups))
+
+
 def _build_context_snapshot(user: User, proposal: dict, session_id: str | None) -> dict:
     sandbox_id = str(proposal.get("sandbox_id") or "").strip()
     sandbox = store.get_sandbox(sandbox_id) if sandbox_id else None
@@ -170,6 +187,7 @@ def save_skill_from_proposal(
     table_descriptions: list[dict] | None = None,
     session_id: str | None = None,
     overwrite_skill_id: str | None = None,
+    shared: bool = False,
 ) -> dict:
     proposal = store.proposals.get(proposal_id)
     if not proposal:
@@ -238,6 +256,8 @@ def save_skill_from_proposal(
             "steps": steps,
             "context_snapshot": context_snapshot,
             "groups": list(user.groups),
+            "visibility": "shared" if shared else "private",
+            "shared": bool(shared),
         },
         "sql_template": sql_template,
         "inherited_tables": inherited_tables,
@@ -286,9 +306,9 @@ def save_skill_from_proposal(
 def list_skills(user: User) -> list[dict]:
     output = []
     for skill_id, item in store.skills.items():
-        groups = item.get("groups") or []
-        if item.get("owner_id") == user.user_id or set(groups).intersection(user.groups):
-            output.append({"skill_id": skill_id, **item})
+        skill = {"skill_id": skill_id, **item}
+        if can_view_skill(user, skill):
+            output.append(skill)
     output.sort(key=lambda x: x.get("created_at") or "", reverse=True)
     return output
 

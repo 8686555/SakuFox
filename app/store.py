@@ -341,6 +341,7 @@ class DatabaseStore:
         for stmt in (
             "ALTER TABLE users ADD COLUMN email VARCHAR(255)",
             "ALTER TABLE users ADD COLUMN external_id VARCHAR(255)",
+            "ALTER TABLE users ADD COLUMN password_hash VARCHAR(255)",
             "ALTER TABLE users ADD COLUMN roles JSON",
             "ALTER TABLE users ADD COLUMN is_active BOOLEAN DEFAULT 1",
             "ALTER TABLE users ADD COLUMN last_login_at VARCHAR(50)",
@@ -836,6 +837,7 @@ class DatabaseStore:
         external_id: str | None = None,
         user_id: str | None = None,
         roles: list[str] | None = None,
+        password_hash: str | None = None,
     ) -> User:
 
         normalized_username = str(username or "").strip()
@@ -868,6 +870,7 @@ class DatabaseStore:
                     display_name=display_name or normalized_username,
                     email=email or "",
                     external_id=external_id or normalized_username,
+                    password_hash=password_hash,
                     groups=normalized_groups,
                     roles=role_names,
                     provider=provider,
@@ -884,6 +887,9 @@ class DatabaseStore:
                 db_user.email = email or db_user.email or ""
 
                 db_user.external_id = external_id or db_user.external_id or normalized_username
+
+                if password_hash is not None:
+                    db_user.password_hash = password_hash
 
                 db_user.groups = normalized_groups
 
@@ -902,6 +908,36 @@ class DatabaseStore:
             sess.refresh(db_user)
 
             return self._db_user_to_user(db_user)
+
+
+    def get_auth_user_record(self, username: str) -> dict | None:
+
+        normalized_username = str(username or "").strip()
+
+        if not normalized_username:
+
+            return None
+
+        with self.SessionFactory() as sess:
+
+            db_user = sess.execute(select(DBUser).where(DBUser.username == normalized_username)).scalar_one_or_none()
+
+            if not db_user:
+
+                return None
+
+            return {
+                "user_id": db_user.user_id,
+                "username": db_user.username,
+                "display_name": db_user.display_name or db_user.username,
+                "email": db_user.email or "",
+                "external_id": db_user.external_id or "",
+                "password_hash": db_user.password_hash or "",
+                "groups": list(db_user.groups or []),
+                "roles": list(db_user.roles or []),
+                "provider": db_user.provider or "",
+                "is_active": bool(db_user.is_active),
+            }
 
 
 

@@ -2,11 +2,17 @@ from pydantic import BaseModel, Field
 
 
 class LoginRequest(BaseModel):
-    provider: str = Field(pattern="^(ldap|oauth)$")
+    provider: str = Field(pattern="^(local|ldap|oauth)$")
     username: str | None = None
     password: str | None = None
     oauth_token: str | None = None
     oauth_provider: str | None = None
+
+
+class RegisterRequest(BaseModel):
+    username: str
+    password: str
+    display_name: str | None = None
 
 
 class IterateRequest(BaseModel):
@@ -68,6 +74,7 @@ class SaveSkillRequest(BaseModel):
     knowledge: list[str] | None = None  # extra business knowledge lines
     table_descriptions: list[dict] | None = None  # [{"table": ..., "description": ...}]
     overwrite_skill_id: str | None = None
+    shared: bool = False
 
 
 class UpdateSessionRequest(BaseModel):
@@ -86,6 +93,7 @@ class UpdateSkillRequest(BaseModel):
     tags: list[str] | None = None
     knowledge: list[str] | None = None
     table_descriptions: list[dict] | None = None
+    shared: bool | None = None
 
 
 class CreateSandboxRequest(BaseModel):
