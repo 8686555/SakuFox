@@ -5,6 +5,9 @@ let sqlToolboxState = {
   views: [],
   currentRun: null,
   currentColumns: [],
+  selectedRunId: "",
+  isExecuting: false,
+  isSaving: false,
 };
 
 function escapeHtml(text) {
@@ -27,8 +30,39 @@ function currentSandbox() {
 
 function normalizeFields(fields) {
   if (!fields) return [];
-  if (Array.isArray(fields)) return fields;
-  return [];
+  return Array.isArray(fields) ? fields : [];
+}
+
+function formatCount(value, suffixKey, suffixFallback) {
+  return `${escapeHtml(String(value ?? 0))} ${escapeHtml(tr(suffixKey, suffixFallback))}`;
+}
+
+function formatStatusTag(status) {
+  const safeStatus = status === "success" ? "success" : (status || "failed");
+  const kind = safeStatus === "success" ? "success" : "error";
+  return `<span class="sql-toolbox-status-tag" data-kind="${kind}">${escapeHtml(safeStatus)}</span>`;
+}
+
+function setButtonLoading(button, labelEl, loading, idleText, loadingText) {
+  if (!button || !labelEl) return;
+  button.disabled = loading;
+  labelEl.textContent = loading ? loadingText : idleText;
+}
+
+function setStatusBadge(prefix, text, kind = "neutral") {
+  const badge = document.getElementById(`${prefix}Badge`);
+  const textEl = document.getElementById(`${prefix}Text`);
+  if (!badge || !textEl) return;
+  badge.dataset.kind = kind;
+  textEl.textContent = text;
+}
+
+function setRunStatus(text, kind = "neutral") {
+  setStatusBadge("runStatus", text, kind);
+}
+
+function setSaveStatus(text, kind = "neutral") {
+  setStatusBadge("saveStatus", text, kind);
 }
 
 function renderResultTable(rows, columns) {
@@ -38,7 +72,7 @@ function renderResultTable(rows, columns) {
 
   const safeRows = Array.isArray(rows) ? rows : [];
   const safeColumns = Array.isArray(columns) && columns.length > 0
-    ? columns.map((col) => typeof col === "string" ? col : col.name).filter(Boolean)
+    ? columns.map((col) => (typeof col === "string" ? col : col.name)).filter(Boolean)
     : (safeRows[0] ? Object.keys(safeRows[0]) : []);
 
   if (!safeColumns.length) {
@@ -57,21 +91,24 @@ function renderResultTable(rows, columns) {
 
 function renderFieldDescriptionInputs(columns) {
   const grid = document.getElementById("fieldDescGrid");
-  if (!grid) return;
-  const safeColumns = Array.isArray(columns) ? columns : [];
+  const empty = document.getElementById("fieldDescEmpty");
+  if (!grid || !empty) return;
 
+  const safeColumns = Array.isArray(columns) ? columns : [];
   if (!safeColumns.length) {
     grid.innerHTML = "";
+    empty.style.display = "block";
     return;
   }
 
+  empty.style.display = "none";
   grid.innerHTML = safeColumns
     .map((col) => {
       const name = typeof col === "string" ? col : (col?.name || "");
       return `
-        <div class="field-desc-item">
-          <label style="display:block;font-size:12px;color:#475569;margin-bottom:4px;">${escapeHtml(name)}</label>
-          <input type="text" data-field-name="${escapeHtml(name)}" placeholder="${escapeHtml(tr("sql_toolbox_field_desc_placeholder", "Field description (optional)"))}" style="padding-left:10px;" />
+        <div class="sql-toolbox-field-item">
+          <label>${escapeHtml(name)}</label>
+          <input type="text" data-field-name="${escapeHtml(name)}" placeholder="${escapeHtml(tr("sql_toolbox_field_desc_placeholder", "Field description (optional)"))}" />
         </div>
       `;
     })
@@ -82,6 +119,26 @@ function syncFieldDescriptionsFromRun(run) {
   const columns = normalizeFields(run?.columns || []);
   sqlToolboxState.currentColumns = columns;
   renderFieldDescriptionInputs(columns);
+}
+
+function setResultMeta(text) {
+  const resultMeta = document.getElementById("resultMeta");
+  if (resultMeta) resultMeta.textContent = text;
+}
+
+function resetEditorState() {
+  sqlToolboxState.currentRun = null;
+  sqlToolboxState.currentColumns = [];
+  sqlToolboxState.selectedRunId = "";
+  setResultMeta(tr("sql_toolbox_not_run", "Not executed yet"));
+  renderResultTable([], []);
+  renderFieldDescriptionInputs([]);
+  const viewNameInput = document.getElementById("viewNameInput");
+  const viewDescInput = document.getElementById("viewDescInput");
+  if (viewNameInput) viewNameInput.value = "";
+  if (viewDescInput) viewDescInput.value = "";
+  setRunStatus(tr("sql_toolbox_waiting", "Waiting to run"), "neutral");
+  setSaveStatus(tr("sql_toolbox_not_saved", "Not saved yet"), "neutral");
 }
 
 function renderModelList() {
@@ -102,29 +159,43 @@ function renderModelList() {
   physicalTables.forEach((name) => {
     items.push(`
       <li class="list-item">
-        <strong><i class="fa-solid fa-table-columns" style="color:#2563eb;"></i> ${escapeHtml(name)}</strong>
-        <div class="section-muted">${escapeHtml(tr("sql_toolbox_physical_table", "Physical Table"))}</div>
+        <div class="sql-toolbox-item-row">
+          <div class="sql-toolbox-item-copy">
+            <strong>${escapeHtml(name)}</strong>
+          </div>
+          <span class="sql-toolbox-type-pill" data-tone="table">${escapeHtml(tr("sql_toolbox_physical_table", "Physical Table"))}</span>
+        </div>
       </li>
     `);
   });
+
   virtualViews.forEach((view) => {
     const name = view?.name || "";
     if (!name) return;
     items.push(`
       <li class="list-item">
-        <strong><i class="fa-solid fa-diagram-project" style="color:#f59e0b;"></i> ${escapeHtml(name)}</strong>
-        <div class="section-muted">${escapeHtml(tr("virtual_view_label", "Virtual View"))}</div>
-        ${view.description ? `<div style="margin-top:4px;">${escapeHtml(view.description)}</div>` : ""}
+        <div class="sql-toolbox-item-row">
+          <div class="sql-toolbox-item-copy">
+            <strong>${escapeHtml(name)}</strong>
+            ${view.description ? `<div class="section-muted" style="margin-top:6px;">${escapeHtml(view.description)}</div>` : ""}
+          </div>
+          <span class="sql-toolbox-type-pill" data-tone="view">${escapeHtml(tr("virtual_view_label", "Virtual View"))}</span>
+        </div>
       </li>
     `);
   });
+
   uploads.forEach(([key, value]) => {
     const name = typeof key === "string" ? key : (value?.name || value?.dataset_name || "");
     if (!name) return;
     items.push(`
       <li class="list-item">
-        <strong><i class="fa-solid fa-file-lines" style="color:#10b981;"></i> ${escapeHtml(name)}</strong>
-        <div class="section-muted">${escapeHtml(tr("sql_toolbox_upload_file", "Uploaded File"))}</div>
+        <div class="sql-toolbox-item-row">
+          <div class="sql-toolbox-item-copy">
+            <strong>${escapeHtml(name)}</strong>
+          </div>
+          <span class="sql-toolbox-type-pill" data-tone="upload">${escapeHtml(tr("sql_toolbox_upload_file", "Uploaded File"))}</span>
+        </div>
       </li>
     `);
   });
@@ -135,6 +206,7 @@ function renderModelList() {
 function renderRuns() {
   const list = document.getElementById("runList");
   if (!list) return;
+
   const runs = sqlToolboxState.runs || [];
   if (!runs.length) {
     list.innerHTML = `<li class="list-item">${escapeHtml(tr("sql_toolbox_no_runs", "No execution history"))}</li>`;
@@ -143,30 +215,51 @@ function renderRuns() {
 
   list.innerHTML = runs
     .map((run) => {
-      const status = run.status === "success"
-        ? `<span style="color:#16a34a;font-weight:600;">success</span>`
-        : `<span style="color:#dc2626;font-weight:600;">${escapeHtml(run.status || "failed")}</span>`;
+      const isSelected = run.run_id === sqlToolboxState.selectedRunId;
       const rowCount = typeof run.row_count === "number" ? run.row_count : 0;
       return `
-        <li class="list-item" data-run-id="${escapeHtml(run.run_id)}">
-          <div class="view-row">
-            <div>
+        <li class="list-item clickable${isSelected ? " selected" : ""}" data-run-id="${escapeHtml(run.run_id)}" tabindex="0" role="button">
+          <div class="sql-toolbox-item-header">
+            <div class="sql-toolbox-item-copy">
               <strong>${escapeHtml(run.run_id)}</strong>
-              <div class="section-muted">${status} | rows=${rowCount} | ${escapeHtml(String(run.duration_ms || 0))}ms</div>
-              <div style="margin-top:4px;white-space:pre-wrap;">${escapeHtml((run.sql || "").slice(0, 180))}</div>
             </div>
-            <button class="btn btn-outline btn-sm load-run-btn" data-run-id="${escapeHtml(run.run_id)}">${escapeHtml(tr("sql_toolbox_load_btn", "Load"))}</button>
+            <button class="btn btn-outline btn-sm sql-toolbox-action-btn load-run-btn" type="button" data-run-id="${escapeHtml(run.run_id)}">${escapeHtml(tr("sql_toolbox_load_btn", "Load"))}</button>
           </div>
+          <div class="sql-toolbox-run-meta">
+            ${formatStatusTag(run.status)}
+            <span>${formatCount(rowCount, "rows", "rows")}</span>
+            <span>${escapeHtml(String(run.duration_ms || 0))}ms</span>
+          </div>
+          <div class="sql-toolbox-run-sql-preview">${escapeHtml((run.sql || "").slice(0, 220))}</div>
         </li>
       `;
     })
     .join("");
 
+  list.querySelectorAll("[data-run-id]").forEach((item) => {
+    item.addEventListener("click", async (event) => {
+      const target = event.target;
+      if (target instanceof HTMLElement && target.closest(".load-run-btn")) return;
+      const runId = item.getAttribute("data-run-id");
+      const run = sqlToolboxState.runs.find((entry) => entry.run_id === runId);
+      if (!run) return;
+      await loadRunIntoEditor(run);
+    });
+    item.addEventListener("keydown", async (event) => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      event.preventDefault();
+      const runId = item.getAttribute("data-run-id");
+      const run = sqlToolboxState.runs.find((entry) => entry.run_id === runId);
+      if (!run) return;
+      await loadRunIntoEditor(run);
+    });
+  });
+
   list.querySelectorAll(".load-run-btn").forEach((btn) => {
     btn.addEventListener("click", async (event) => {
       event.stopPropagation();
       const runId = btn.getAttribute("data-run-id");
-      const run = sqlToolboxState.runs.find((item) => item.run_id === runId);
+      const run = sqlToolboxState.runs.find((entry) => entry.run_id === runId);
       if (!run) return;
       await loadRunIntoEditor(run);
     });
@@ -176,6 +269,7 @@ function renderRuns() {
 function renderViews() {
   const list = document.getElementById("viewList");
   if (!list) return;
+
   const views = sqlToolboxState.views || [];
   if (!views.length) {
     list.innerHTML = `<li class="list-item">${escapeHtml(tr("sql_toolbox_no_views", "No analysis views yet"))}</li>`;
@@ -187,13 +281,16 @@ function renderViews() {
       const cols = Array.isArray(view.columns) ? view.columns : [];
       return `
         <li class="list-item">
-          <div class="view-row">
-            <div style="min-width:0;">
+          <div class="sql-toolbox-view-row">
+            <div class="sql-toolbox-item-copy">
               <strong>${escapeHtml(view.name || view.view_id)}</strong>
-              <div class="section-muted">${escapeHtml(view.description || "")}</div>
-              <div class="section-muted" style="margin-top:4px;">${escapeHtml(String(cols.length))} cols | source ${escapeHtml(view.source_run_id || "")}</div>
+              <div class="section-muted" style="margin-top:6px;">${escapeHtml(view.description || "")}</div>
+              <div class="sql-toolbox-view-meta">
+                <span>${formatCount(cols.length, "cols", "cols")}</span>
+                <span>source ${escapeHtml(view.source_run_id || "")}</span>
+              </div>
             </div>
-            <button class="btn btn-outline btn-sm delete-view-btn" data-view-id="${escapeHtml(view.view_id)}">${escapeHtml(tr("sql_toolbox_delete_btn", "Delete"))}</button>
+            <button class="btn btn-outline btn-sm sql-toolbox-action-btn delete-view-btn" type="button" data-view-id="${escapeHtml(view.view_id)}">${escapeHtml(tr("sql_toolbox_delete_btn", "Delete"))}</button>
           </div>
         </li>
       `;
@@ -208,6 +305,31 @@ function renderViews() {
       await deleteVirtualView(viewId);
     });
   });
+}
+
+function updateActionButtons() {
+  const runBtn = document.getElementById("runBtn");
+  const runBtnLabel = document.getElementById("runBtnLabel");
+  const saveViewBtn = document.getElementById("saveViewBtn");
+  const saveBtnLabel = document.getElementById("saveBtnLabel");
+
+  setButtonLoading(
+    runBtn,
+    runBtnLabel,
+    sqlToolboxState.isExecuting,
+    tr("sql_toolbox_run", "Run Validation"),
+    tr("sql_toolbox_running_btn", "Running..."),
+  );
+
+  const canSave = sqlToolboxState.currentRun && sqlToolboxState.currentRun.status === "success" && !sqlToolboxState.isSaving;
+  if (saveViewBtn) {
+    saveViewBtn.disabled = !canSave;
+  }
+  if (saveBtnLabel) {
+    saveBtnLabel.textContent = sqlToolboxState.isSaving
+      ? tr("sql_toolbox_saving_btn", "Saving...")
+      : tr("sql_toolbox_save_btn", "Save Analysis View");
+  }
 }
 
 async function loadSandboxes(selectId = "") {
@@ -229,6 +351,7 @@ async function loadSandboxes(selectId = "") {
     renderModelList();
     renderRuns();
     renderViews();
+    updateActionButtons();
     return;
   }
 
@@ -256,6 +379,7 @@ async function loadRunsAndViews() {
     sqlToolboxState.views = [];
     renderRuns();
     renderViews();
+    updateActionButtons();
     return;
   }
 
@@ -268,25 +392,12 @@ async function loadRunsAndViews() {
   sqlToolboxState.views = viewsRes.virtual_views || [];
   renderRuns();
   renderViews();
+  updateActionButtons();
 }
 
 async function refreshEverything(selectId = "") {
   await loadSandboxes(selectId);
   await loadRunsAndViews();
-}
-
-function setRunStatus(text, kind = "") {
-  const el = document.getElementById("runStatus");
-  if (!el) return;
-  el.textContent = text;
-  el.style.color = kind === "error" ? "#dc2626" : kind === "success" ? "#16a34a" : "#334155";
-}
-
-function setSaveStatus(text, kind = "") {
-  const el = document.getElementById("saveStatus");
-  if (!el) return;
-  el.textContent = text;
-  el.style.color = kind === "error" ? "#dc2626" : kind === "success" ? "#16a34a" : "#334155";
 }
 
 async function loadRunIntoEditor(run) {
@@ -297,12 +408,10 @@ async function loadRunIntoEditor(run) {
 
   sqlInput.value = run.sql || "";
   sqlToolboxState.currentRun = run;
+  sqlToolboxState.selectedRunId = run.run_id || "";
   syncFieldDescriptionsFromRun(run);
 
-  const resultMeta = document.getElementById("resultMeta");
-  if (resultMeta) {
-    resultMeta.textContent = `${run.status || "unknown"} | rows=${run.row_count || 0} | ${run.duration_ms || 0}ms`;
-  }
+  setResultMeta(`run ${run.run_id} | ${run.status || "unknown"} | rows=${run.row_count || 0} | ${run.duration_ms || 0}ms`);
   renderResultTable(run.result_preview || [], run.columns || []);
 
   const inferredName = `${(currentSandbox()?.name || "sandbox").replace(/[^A-Za-z0-9_]/g, "_")}_view`;
@@ -312,18 +421,21 @@ async function loadRunIntoEditor(run) {
   if (!viewDescInput.value) {
     viewDescInput.value = "";
   }
+
   setSaveStatus(
     run.status === "success"
       ? tr("sql_toolbox_can_save_run", "This successful run can be saved")
       : tr("sql_toolbox_cannot_save_run", "This run cannot be saved"),
     run.status === "success" ? "success" : "error",
   );
+  renderRuns();
+  updateActionButtons();
 }
 
 async function executeCurrentSql() {
   const sandboxId = sqlToolboxState.currentSandboxId;
   const sqlInput = document.getElementById("sqlInput");
-  const resultMeta = document.getElementById("resultMeta");
+
   if (!sandboxId) {
     setRunStatus(tr("sql_toolbox_need_sandbox", "Please select a sandbox first"), "error");
     return;
@@ -333,36 +445,40 @@ async function executeCurrentSql() {
     return;
   }
 
-  const payload = {
-    sandbox_id: sandboxId,
-    sql: sqlInput.value,
-  };
-
   sqlToolboxState.currentRun = null;
-  setRunStatus(tr("sql_toolbox_executing", "Executing..."));
-  if (resultMeta) resultMeta.textContent = tr("sql_toolbox_executing", "Executing...");
+  sqlToolboxState.selectedRunId = "";
+  sqlToolboxState.isExecuting = true;
+  updateActionButtons();
+  setRunStatus(tr("sql_toolbox_executing", "Executing..."), "running");
+  setResultMeta(tr("sql_toolbox_executing", "Executing..."));
 
   try {
     const res = await api("/api/sql-toolbox/execute", {
       method: "POST",
-      body: JSON.stringify(payload),
+      body: JSON.stringify({
+        sandbox_id: sandboxId,
+        sql: sqlInput.value,
+      }),
     });
     const run = res.run;
     sqlToolboxState.currentRun = run;
+    sqlToolboxState.selectedRunId = run.run_id || "";
     syncFieldDescriptionsFromRun(run);
     renderResultTable(run.result_preview || [], run.columns || []);
-    if (resultMeta) {
-      resultMeta.textContent = `run ${run.run_id} | ${run.status} | rows=${run.row_count || 0} | ${run.duration_ms || 0}ms`;
-    }
+    setResultMeta(`run ${run.run_id} | ${run.status} | rows=${run.row_count || 0} | ${run.duration_ms || 0}ms`);
     setRunStatus(tr("sql_toolbox_execute_success", "Execution successful"), "success");
     setSaveStatus(tr("sql_toolbox_can_save", "You can save this as an analysis view"), "success");
     await loadRunsAndViews();
   } catch (err) {
     const message = err?.message || tr("sql_toolbox_execute_failed", "Execution failed");
     setRunStatus(message, "error");
-    if (resultMeta) resultMeta.textContent = message;
+    setResultMeta(message);
     setSaveStatus(tr("sql_toolbox_cannot_save_run", "This run cannot be saved"), "error");
     await loadRunsAndViews();
+  } finally {
+    sqlToolboxState.isExecuting = false;
+    renderRuns();
+    updateActionButtons();
   }
 }
 
@@ -400,6 +516,10 @@ async function saveCurrentView() {
     }
   });
 
+  sqlToolboxState.isSaving = true;
+  updateActionButtons();
+  setSaveStatus(tr("sql_toolbox_saving_btn", "Saving..."), "running");
+
   try {
     const res = await api(`/api/sandboxes/${encodeURIComponent(sandboxId)}/virtual-views`, {
       method: "POST",
@@ -414,6 +534,9 @@ async function saveCurrentView() {
     await loadRunsAndViews();
   } catch (err) {
     setSaveStatus(err?.message || tr("sql_toolbox_save_failed", "Save failed"), "error");
+  } finally {
+    sqlToolboxState.isSaving = false;
+    updateActionButtons();
   }
 }
 
@@ -442,6 +565,9 @@ document.addEventListener("DOMContentLoaded", async () => {
   const saveViewBtn = document.getElementById("saveViewBtn");
   const sqlInput = document.getElementById("sqlInput");
 
+  renderFieldDescriptionInputs([]);
+  updateActionButtons();
+
   try {
     const me = await api("/api/me");
     if (typeof setAppFeatures === "function") setAppFeatures(me.features || {});
@@ -453,12 +579,7 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   sandboxSelect.addEventListener("change", async () => {
     sqlToolboxState.currentSandboxId = sandboxSelect.value || "";
-    sqlToolboxState.currentRun = null;
-    document.getElementById("resultMeta").textContent = tr("sql_toolbox_not_run", "Not executed yet");
-    renderResultTable([], []);
-    document.getElementById("viewNameInput").value = "";
-    document.getElementById("viewDescInput").value = "";
-    document.getElementById("fieldDescGrid").innerHTML = "";
+    resetEditorState();
     renderModelList();
     await loadRunsAndViews();
   });
@@ -482,5 +603,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
   } catch (err) {
     setRunStatus(err?.message || tr("sql_toolbox_loading_fail", "Load failed"), "error");
+  } finally {
+    updateActionButtons();
   }
 });
